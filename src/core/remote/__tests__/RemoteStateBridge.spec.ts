@@ -1,10 +1,10 @@
 import { EventEmitter } from "events"
 
-import type { ClineMessage, TaskLike } from "@roo-code/types"
+import type { ClineMessage, ModelInfo, TaskLike } from "@roo-code/types"
 import { RooCodeEventName, TaskStatus, providerIdentifiers } from "@roo-code/types"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { RemoteStateBridge, buildRemoteStatus, toActivityPayload } from "../RemoteStateBridge"
+import { RemoteStateBridge, buildRemoteStatus, parseFollowUpSuggestions, toActivityPayload } from "../RemoteStateBridge"
 import type { RemoteEventSource, RemoteStateSource, RemoteTaskSource, RemoteStatus } from "../types"
 
 /* ------------------------------------------------------------------ */
@@ -125,6 +125,27 @@ const baseState: RemoteStateSource = {
 	apiConfiguration: { apiProvider: providerIdentifiers.anthropic, apiModelId: "claude-sonnet-4-5" },
 }
 
+const KNOWN_MODES = ["code", "architect", "ask", "debug", "orchestrator"] as const
+
+function makeTokenUsage(contextTokens: number) {
+	return { totalTokensIn: contextTokens, totalTokensOut: 0, totalRequests: 1, totalCost: 0, contextTokens }
+}
+
+/** Minimal ModelInfo (only the fields buildRemoteStatus reads). */
+const modelInfoWithWindow = (contextWindow: number): ModelInfo =>
+	({ maxTokens: null, contextWindow, supportsPromptCache: false }) as unknown as ModelInfo
+
+function createMockTaskWithContext(overrides: Partial<MockTask> & { tokenUsage?: unknown; api?: RemoteTaskSource["api"] } = {}): MockTask {
+	const { tokenUsage, api, ...rest } = overrides
+	return createMockTask({
+		tokenUsage: undefined,
+		api: undefined,
+		...rest,
+		...(tokenUsage !== undefined ? { tokenUsage } : {}),
+		...(api !== undefined ? { api } : {}),
+	} as Partial<MockTask>)
+}
+
 describe("buildRemoteStatus", () => {
 	it("reports idle without a task and resolves the mode label + model info", () => {
 		const status = buildRemoteStatus(baseState, undefined)
@@ -204,6 +225,141 @@ describe("buildRemoteStatus", () => {
 			abort: true,
 		})
 		expect(buildRemoteStatus(baseState, task).task.state).toBe("idle")
+	})
+
+	it("omits contextWindow without a task or without token usage", () => {
+		expect(buildRemoteStatus(baseState, undefined).task.contextWindow).toBeUndefined()
+
+		const noUsage = createMockTask({ taskStatus: TaskStatus.Running })
+		expect(buildRemoteStatus(baseState, noUsage).task.contextWindow).toBeUndefined()
+	})
+
+	it("reports contextWindow with used + limit + percent when both are known", () => {
+		const task = createMockTaskWithContext({
+			taskStatus: TaskStatus.Running,
+			tokenUsage: makeTokenUsage(123_456),
+			api: { getModel: () => ({ id: "claude-sonnet-4-5", info: modelInfoWithWindow(200_000) }) },
+		})
+		expect(buildRemoteStatus(baseState, task).task.contextWindow).toEqual({ used: 123_456, limit: 200_000, percent: 61.73 })
+	})
+
+	it("reports only `used` when the model context window is unknown", () => {
+		const noModelInfo = createMockTaskWithContext({ taskStatus: TaskStatus.Running, tokenUsage: makeTokenUsage(50_000) })
+		expect(buildRemoteStatus(baseState, noModelInfo).task.contextWindow).toEqual({ used: 50_000 })
+
+		const zeroWindow = createMockTaskWithContext({
+			taskStatus: TaskStatus.Running,
+			tokenUsage: makeTokenUsage(50_000),
+			api: { getModel: () => ({ id: "x", info: modelInfoWithWindow(0) }) },
+		})
+		expect(buildRemoteStatus(baseState, zeroWindow).task.contextWindow).toEqual({ used: 50_000 })
+
+		const throwingGetModel = createMockTaskWithContext({
+			taskStatus: TaskStatus.Running,
+			tokenUsage: makeTokenUsage(50_000),
+			api: { getModel: () => { throw new Error("boom") } },
+		})
+		expect(buildRemoteStatus(baseState, throwingGetModel).task.contextWindow).toEqual({ used: 50_000 })
+	})
+
+	it("includes followup suggestions in pendingAsk and keeps only known mode slugs", () => {
+		const text = JSON.stringify({
+			question: "Which framework?",
+			suggest: [
+				{ answer: "Use React" },
+				{ answer: "Switch to Architect", mode: "architect" },
+				{ answer: "Unknown target", mode: "nope" },
+				{ answer: "" },
+				{ answer: "  Spaced answer  " },
+			],
+		})
+		const ask = makeMessage({ ts: 7, type: "ask", ask: "followup", text })
+		const task = createMockTask({ taskStatus: TaskStatus.Interactive, taskAsk: ask })
+
+		expect(buildRemoteStatus(baseState, task).task.pendingAsk?.suggestions).toEqual([
+			{ answer: "Use React" },
+			{ answer: "Switch to Architect", mode: "architect" },
+			{ answer: "Unknown target" },
+			{ answer: "Spaced answer" },
+		])
+	})
+
+	it("does not set suggestions for non-followup asks or unparseable followup text", () => {
+		const toolAsk = createMockTask({
+			taskStatus: TaskStatus.Interactive,
+			taskAsk: makeMessage({ ts: 8, type: "ask", ask: "tool", text: JSON.stringify({ suggest: [{ answer: "x" }] }) }),
+		})
+		expect(buildRemoteStatus(baseState, toolAsk).task.pendingAsk?.suggestions).toBeUndefined()
+
+		const brokenJson = createMockTask({
+			taskStatus: TaskStatus.Interactive,
+			taskAsk: makeMessage({ ts: 9, type: "ask", ask: "followup", text: "{ not json" }),
+		})
+		expect(buildRemoteStatus(baseState, brokenJson).task.pendingAsk?.suggestions).toBeUndefined()
+	})
+
+	it("accepts custom mode slugs from the state as valid suggestion modes", () => {
+		const state = { ...baseState, customModes: [{ slug: "my-mode", name: "My Custom Mode" }] }
+		const text = JSON.stringify({ suggest: [{ answer: "Do it my way", mode: "my-mode" }, { answer: "Plain" }] })
+		const ask = makeMessage({ ts: 10, type: "ask", ask: "followup", text })
+		const task = createMockTask({ taskStatus: TaskStatus.Interactive, taskAsk: ask })
+
+		expect(buildRemoteStatus(state, task).task.pendingAsk?.suggestions).toEqual([
+			{ answer: "Do it my way", mode: "my-mode" },
+			{ answer: "Plain" },
+		])
+	})
+})
+
+/* ------------------------------------------------------------------ */
+/* parseFollowUpSuggestions                                            */
+/* ------------------------------------------------------------------ */
+
+describe("parseFollowUpSuggestions", () => {
+	it("parses a valid follow-up payload with suggestions and modes", () => {
+		const text = JSON.stringify({
+			question: "How to proceed?",
+			suggest: [{ answer: "Continue", mode: "code" }, { answer: "Stop here" }],
+		})
+		expect(parseFollowUpSuggestions(text, KNOWN_MODES)).toEqual([
+			{ answer: "Continue", mode: "code" },
+			{ answer: "Stop here" },
+		])
+	})
+
+	it("returns undefined for empty or non-string text", () => {
+		expect(parseFollowUpSuggestions(undefined, KNOWN_MODES)).toBeUndefined()
+		expect(parseFollowUpSuggestions("", KNOWN_MODES)).toBeUndefined()
+		expect(parseFollowUpSuggestions("   ", KNOWN_MODES)).toBeUndefined()
+	})
+
+	it("returns undefined for broken JSON or non-object payloads", () => {
+		for (const text of ["{ not json", "42", '"plain"', "[1, 2]", "null"]) {
+			expect(parseFollowUpSuggestions(text, KNOWN_MODES)).toBeUndefined()
+		}
+	})
+
+	it("returns undefined when suggest is missing or no entry has a usable answer", () => {
+		expect(parseFollowUpSuggestions(JSON.stringify({ question: "q" }), KNOWN_MODES)).toBeUndefined()
+		expect(parseFollowUpSuggestions(JSON.stringify({ suggest: "nope" }), KNOWN_MODES)).toBeUndefined()
+		expect(parseFollowUpSuggestions(JSON.stringify({ suggest: [{}, { answer: "" }, { answer: 7 }] }), KNOWN_MODES)).toBeUndefined()
+	})
+
+	it("truncates to the first 4 suggestions and answers to 200 characters", () => {
+		const text = JSON.stringify({
+			suggest: [1, 2, 3, 4, 5].map((n) => ({ answer: `${n} ${"a".repeat(250)}` })),
+		})
+		const result = parseFollowUpSuggestions(text, KNOWN_MODES)
+		expect(result).toHaveLength(4)
+		for (const suggestion of result ?? []) {
+			expect(suggestion.answer).toHaveLength(200)
+			expect(suggestion.answer.endsWith("…")).toBe(true)
+		}
+	})
+
+	it("drops unknown mode slugs but keeps the answer", () => {
+		const text = JSON.stringify({ suggest: [{ answer: "A", mode: "nope" }, { answer: "B", mode: "" }] })
+		expect(parseFollowUpSuggestions(text, KNOWN_MODES)).toEqual([{ answer: "A" }, { answer: "B" }])
 	})
 })
 

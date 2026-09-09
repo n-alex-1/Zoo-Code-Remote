@@ -1,7 +1,7 @@
 import { EventEmitter } from "events"
 
-import type { ClineMessage, TaskLike, ProviderSettings } from "@roo-code/types"
-import { DEFAULT_MODES, RooCodeEventName, getModelId, TaskStatus } from "@roo-code/types"
+import type { ClineMessage, ModelInfo, SuggestionItem, TaskLike, ProviderSettings } from "@roo-code/types"
+import { DEFAULT_MODES, RooCodeEventName, getModelId, getSuggestionMode, hasUsableAnswer, TaskStatus } from "@roo-code/types"
 
 import { REMOTE_API_VERSION } from "./types"
 import type {
@@ -9,6 +9,7 @@ import type {
 	RemoteEventSource,
 	RemoteStateSource,
 	RemoteStatus,
+	RemoteSuggestion,
 	RemoteTaskSource,
 } from "./types"
 
@@ -19,6 +20,8 @@ export const REMOTE_ACTIVITY_EVENT = "remoteActivity" as const
 /** Contract limits (docs/architektur.md §3). */
 const SUMMARY_MAX_CHARS = 500
 const ACTIVITY_TEXT_MAX_CHARS = 2000
+const SUGGESTION_ANSWER_MAX_CHARS = 200
+const MAX_FOLLOWUP_SUGGESTIONS = 4
 /** Status push debounce. */
 const STATUS_DEBOUNCE_MS = 200
 /** Per-line partial throttle: at most one emit per ts within this window (~10 Hz). */
@@ -101,7 +104,52 @@ function lastAssistantSummary(task: RemoteTaskSource): string | undefined {
 	return undefined
 }
 
-function mapPendingAsk(ask: ClineMessage | undefined): NonNullable<RemoteStatus["task"]["pendingAsk"]> {
+/**
+ * Parses the follow-up ask text (`{ question?, suggest?: [{ answer?, mode? }] }`, same JSON the
+ * webview parses in ChatRow) into remote suggestions. Returns undefined for empty/invalid input —
+ * never throws. At most {@link MAX_FOLLOWUP_SUGGESTIONS} entries; `answer` truncated to 200 chars;
+ * `mode` kept only when it is a known mode slug (default or custom).
+ */
+export function parseFollowUpSuggestions(text: string | undefined, knownModes?: Iterable<string>): RemoteSuggestion[] | undefined {
+	if (!text || text.trim().length === 0) {
+		return undefined
+	}
+
+	let data: unknown
+	try {
+		data = JSON.parse(text)
+	} catch {
+		return undefined
+	}
+	if (typeof data !== "object" || data === null) {
+		return undefined
+	}
+	const rawSuggest = (data as { suggest?: unknown }).suggest
+	if (!Array.isArray(rawSuggest)) {
+		return undefined
+	}
+
+	const knownSlugs = new Set(knownModes ?? [])
+	const suggestions: RemoteSuggestion[] = []
+	for (const raw of rawSuggest) {
+		if (suggestions.length >= MAX_FOLLOWUP_SUGGESTIONS) {
+			break
+		}
+		const entry = raw as SuggestionItem | null
+		if (!hasUsableAnswer(entry)) {
+			continue
+		}
+		const suggestion: RemoteSuggestion = { answer: truncate(entry.answer.trim(), SUGGESTION_ANSWER_MAX_CHARS) }
+		const mode = getSuggestionMode(entry.mode)
+		if (mode && knownSlugs.has(mode)) {
+			suggestion.mode = mode
+		}
+		suggestions.push(suggestion)
+	}
+	return suggestions.length > 0 ? suggestions : undefined
+}
+
+function mapPendingAsk(ask: ClineMessage | undefined, knownModes: Set<string>): NonNullable<RemoteStatus["task"]["pendingAsk"]> {
 	const askType = ask && ask.type === "ask" ? (ask.ask ?? "") : ""
 	const pendingAsk: NonNullable<RemoteStatus["task"]["pendingAsk"]> = {
 		askType,
@@ -110,11 +158,46 @@ function mapPendingAsk(ask: ClineMessage | undefined): NonNullable<RemoteStatus[
 	}
 	if (typeof ask?.text === "string" && ask.text.length > 0) {
 		pendingAsk.question = truncate(ask.text, ACTIVITY_TEXT_MAX_CHARS)
+		if (askType === "followup") {
+			const suggestions = parseFollowUpSuggestions(ask.text, knownModes)
+			if (suggestions) {
+				pendingAsk.suggestions = suggestions
+			}
+		}
 	}
 	return pendingAsk
 }
 
-function mapTask(task: RemoteTaskSource | undefined): RemoteStatus["task"] {
+/**
+ * Context-window fill of the active task: `used` from `task.tokenUsage.contextTokens`,
+ * `limit` from the current model's registered context window (`api.getModel().info.contextWindow`),
+ * `percent` = used/limit in 0..100 (2 decimals) only when both are known. Omitted entirely without usage data.
+ */
+function buildContextWindow(task: RemoteTaskSource | undefined): RemoteStatus["task"]["contextWindow"] {
+	const used = task?.tokenUsage?.contextTokens
+	if (typeof used !== "number" || !Number.isFinite(used) || used < 0) {
+		return undefined
+	}
+
+	let info: ModelInfo | undefined
+	try {
+		info = task?.api?.getModel().info
+	} catch {
+		info = undefined
+	}
+	const limit =
+		typeof info?.contextWindow === "number" && Number.isFinite(info.contextWindow) && info.contextWindow > 0
+			? info.contextWindow
+			: undefined
+
+	if (limit === undefined) {
+		return { used }
+	}
+	const percent = Math.round((used / limit) * 10000) / 100
+	return Number.isFinite(percent) ? { used, limit, percent } : { used, limit }
+}
+
+function mapTask(task: RemoteTaskSource | undefined, knownModes: Set<string>): RemoteStatus["task"] {
 	if (!task || task.abort === true || task.abandoned === true) {
 		return { state: "idle" }
 	}
@@ -124,11 +207,15 @@ function mapTask(task: RemoteTaskSource | undefined): RemoteStatus["task"] {
 	if (summary) {
 		base.summary = summary
 	}
+	const contextWindow = buildContextWindow(task)
+	if (contextWindow) {
+		base.contextWindow = contextWindow
+	}
 
 	switch (task.taskStatus) {
 		case TaskStatus.Interactive:
 		case TaskStatus.Resumable:
-			return { ...base, state: "waiting_for_input", pendingAsk: mapPendingAsk(task.taskAsk) }
+			return { ...base, state: "waiting_for_input", pendingAsk: mapPendingAsk(task.taskAsk, knownModes) }
 		case TaskStatus.Idle: {
 			const ask = task.taskAsk
 			if (ask && ask.type === "ask") {
@@ -151,9 +238,10 @@ function mapTask(task: RemoteTaskSource | undefined): RemoteStatus["task"] {
 /** Builds the `RemoteStatus` contract object from provider state + active task. */
 export function buildRemoteStatus(state: RemoteStateSource, task: RemoteTaskSource | undefined): RemoteStatus {
 	const apiConfiguration = (state.apiConfiguration ?? {}) as ProviderSettings
+	const knownModes = new Set<string>([...DEFAULT_MODES.map((mode) => mode.slug), ...(state.customModes ?? []).map((mode) => mode.slug)])
 	return {
 		connection: { extensionVersion: state.version ?? "", apiVersion: REMOTE_API_VERSION },
-		task: mapTask(task),
+		task: mapTask(task, knownModes),
 		mode: { current: state.mode ?? "", label: resolveModeLabel(state) },
 		model: {
 			profileName: state.currentApiConfigName,

@@ -1,5 +1,6 @@
 import type {
 	ClineMessage,
+	ModelInfo,
 	ProviderSettingsEntry,
 	TaskEvents,
 	TaskLike,
@@ -87,15 +88,25 @@ export interface RemoteStatus {
 		state: RemoteTaskState
 		taskId?: string
 		summary?: string
+		contextWindow?: { used: number; limit?: number; percent?: number }
 		pendingAsk?: {
 			askType: string
 			question?: string
 			canApprove: boolean
 			expectsText: boolean
+			suggestions?: RemoteSuggestion[]
 		}
 	}
 	mode: { current: string; label: string }
 	model: { profileName?: string; modelId?: string; provider?: string }
+}
+
+/** Follow-up answer suggestion — parsed server-side from the `followup` ask text (same JSON shape as the webview). */
+export interface RemoteSuggestion {
+	/** Suggested reply, max 200 chars. Tapping it in the app = `messageResponse` with this text. */
+	answer: string
+	/** Optional target mode slug; only set when it is a known default or custom mode. */
+	mode?: string
 }
 
 /**
@@ -188,10 +199,12 @@ export interface RemoteStateSource {
 }
 
 /** The subset of Task the bridge reads (TaskLike + clineMessages, which is public on Task). */
-export interface RemoteTaskSource extends Pick<TaskLike, "taskId" | "taskStatus" | "taskAsk"> {
+export interface RemoteTaskSource extends Pick<TaskLike, "taskId" | "taskStatus" | "taskAsk" | "tokenUsage"> {
 	readonly abort: boolean
 	readonly abandoned: boolean
 	readonly clineMessages: ClineMessage[]
+	/** Optional access to the current model metadata (structural subset of `Task.api` / ApiHandler) — used for the context-window limit. */
+	readonly api?: { getModel(): { id: string; info: ModelInfo } } | undefined
 	on<K extends keyof TaskEvents>(event: K, listener: (...args: TaskEvents[K]) => void | Promise<void>): this
 	off<K extends keyof TaskEvents>(event: K, listener: (...args: TaskEvents[K]) => void | Promise<void>): this
 }
