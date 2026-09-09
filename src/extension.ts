@@ -28,6 +28,7 @@ import { Package } from "./shared/package"
 import { formatLanguage } from "./shared/language"
 import { ContextProxy } from "./core/config/ContextProxy"
 import { ClineProvider } from "./core/webview/ClineProvider"
+import { RemoteControl, setRemoteControlInstance } from "./core/remote/RemoteControl"
 import { DIFF_VIEW_URI_SCHEME } from "./integrations/editor/DiffViewProvider"
 import { Terminal } from "./integrations/terminal/Terminal"
 import { TerminalRegistry } from "./integrations/terminal/TerminalRegistry"
@@ -62,6 +63,7 @@ import { initZooCodeAuth } from "./services/zoo-code-auth"
 let outputChannel: vscode.OutputChannel
 let extensionContext: vscode.ExtensionContext
 let cloudService: CloudService | undefined
+let remoteControl: RemoteControl | undefined
 
 let settingsUpdatedHandler: (() => void) | undefined
 
@@ -244,12 +246,30 @@ export async function activate(context: vscode.ExtensionContext) {
 
 	// Finish initializing the provider.
 	TelemetryService.instance.setProvider(provider)
+context.subscriptions.push(
+	vscode.window.registerWebviewViewProvider(ClineProvider.sideBarId, provider, {
+		webviewOptions: { retainContextWhenHidden: true },
+	}),
+)
 
-	context.subscriptions.push(
-		vscode.window.registerWebviewViewProvider(ClineProvider.sideBarId, provider, {
-			webviewOptions: { retainContextWhenHidden: true },
-		}),
+// Initialize the remote control server (HTTPS + WebSocket for the Zoo Remote app).
+// Only starts when `zoo-code.remote.enabled` is set; reacts to live setting changes.
+// The provider feeds the status/activity bridge (Session 2: GET /api/status + WS events).
+try {
+	remoteControl = new RemoteControl(context, provider)
+	await remoteControl.initialize()
+	setRemoteControlInstance(remoteControl)
+	context.subscriptions.push(remoteControl)
+} catch (error) {
+	remoteControl = undefined
+	setRemoteControlInstance(undefined)
+	outputChannel.appendLine(
+		`[Zoo Remote] Initialization failed; continuing without remote server: ${
+			error instanceof Error ? error.message : String(error)
+		}`,
 	)
+}
+
 
 	// Check for worktree auto-open path (set when switching to a worktree)
 	await checkWorktreeAutoOpen(context, outputChannel)
@@ -403,6 +423,19 @@ export async function deactivate() {
 			outputChannel.appendLine(
 				`Failed to shut down telemetry service: ${error instanceof Error ? error.message : String(error)}`,
 			)
+		}
+	}
+
+	if (remoteControl) {
+		try {
+			await remoteControl.dispose()
+		} catch (error) {
+			outputChannel.appendLine(
+				`[Zoo Remote] Failed to dispose remote control: ${error instanceof Error ? error.message : String(error)}`,
+			)
+		} finally {
+			remoteControl = undefined
+			setRemoteControlInstance(undefined)
 		}
 	}
 

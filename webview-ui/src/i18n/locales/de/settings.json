@@ -38,6 +38,7 @@
 		"slashCommands": "Slash-Befehle",
 		"prompts": "Eingabeaufforderungen",
 		"ui": "UI",
+		"remote": "Remote Control",
 		"experimental": "Experimentell",
 		"language": "Sprache",
 		"about": "Über Zoo Code",
@@ -1192,5 +1193,28 @@
 			"descriptionTooLong": "Beschreibung muss 1024 Zeichen oder weniger sein"
 		},
 		"footer": "Erstelle deine eigenen Skills mit dem Skill Writer Modus, verfügbar im <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
-	}
+		},
+		"remote": {
+			"enabled": {
+				"label": "Remote Control aktivieren",
+				"description": "Startet einen lokalen HTTPS/WebSocket-Server, damit die Zoo Remote Android-App den Task-Status sieht und Ask-Fragen genehmigen/antworten kann."
+			},
+			"port": {
+				"label": "Port",
+				"description": "TCP-Port für den Remote-Control-Server (Standard: 8999). Änderung bei aktiviertem Server startet ihn auf dem neuen Port neu."
+			},
+			"status": {
+				"running": "Server läuft.",
+				"starting": "Server wird gestartet…"
+			},
+			"token": {
+				"label": "Zugriffstoken"
+			},
+			"fingerprint": {
+				"label": "Zertifikats-Fingerprint (SHA-256)"
+			},
+			"copy": "Kopieren",
+			"copied": "Kopiert!",
+			"pairingHint": "Gib in der Zoo Remote App Host/IP, Port, Token und Zertifikats-Fingerprint ein, um mit diesem Rechner zu verknüpfen."
+		}
 }

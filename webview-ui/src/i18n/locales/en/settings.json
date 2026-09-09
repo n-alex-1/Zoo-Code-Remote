@@ -40,6 +40,7 @@
 		"rules": "Rules",
 		"prompts": "Prompts",
 		"ui": "UI",
+		"remote": "Remote Control",
 		"experimental": "Experimental",
 		"language": "Language",
 		"about": "About Zoo Code"
@@ -1192,5 +1193,28 @@
 			"output": "Output",
 			"cacheReads": "Cache reads"
 		}
+	},
+	"remote": {
+		"enabled": {
+			"label": "Enable Remote Control",
+			"description": "Starts a local HTTPS/WebSocket server so the Zoo Remote Android app can see task status and approve/answer asks."
+		},
+		"port": {
+			"label": "Port",
+			"description": "TCP port for the remote control server (default: 8999). Changing it while enabled restarts the server on the new port."
+		},
+		"status": {
+			"running": "Server running.",
+			"starting": "Starting server…"
+		},
+		"token": {
+			"label": "Access token"
+		},
+		"fingerprint": {
+			"label": "Certificate fingerprint (SHA-256)"
+		},
+		"copy": "Copy",
+		"copied": "Copied!",
+		"pairingHint": "Enter host/IP, port, token and certificate fingerprint in the Zoo Remote app to pair with this machine."
 	}
 }

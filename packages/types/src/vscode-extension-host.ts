@@ -108,6 +108,8 @@ export interface ExtensionMessage {
 		| "fileContent"
 		| "rooHistoryImportProgress"
 		| "themeFixtureProbeRequest"
+		// Remote Control response types
+		| "remoteInfo"
 	text?: string
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
@@ -156,6 +158,14 @@ export interface ExtensionMessage {
 	values?: Record<string, any>
 	requestId?: string
 	themeFixture?: WebviewThemeFixture
+	/** For remoteInfo: state of the Zoo Remote control server. */
+	remoteInfoPayload?: {
+		enabled: boolean
+		port: number
+		running: boolean
+		token: string | null
+		fingerprint: string | null
+	}
 	promptText?: string
 	results?:
 		| { path: string; type: "file" | "folder"; label?: string }[]
@@ -646,6 +656,8 @@ export interface WebviewMessage {
 		| "openRuleFile"
 		| "openRulesDirectory"
 		| "themeFixtureProbeResponse"
+		// Remote Control messages
+		| "requestRemoteInfo"
 	text?: string
 	taskId?: string
 	editedMessageContent?: string
