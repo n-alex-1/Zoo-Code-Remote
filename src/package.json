@@ -448,6 +448,15 @@
 					"maximum": 65535,
 					"description": "%settings.remote.port.description%",
 					"markdownDescription": "%settings.remote.port.description%"
+				},
+				"zoo-code.remote.allowedIps": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [],
+					"description": "%settings.remote.allowedIps.description%",
+					"markdownDescription": "%settings.remote.allowedIps.description%"
 				}
 			}
 		}

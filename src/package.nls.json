@@ -50,5 +50,6 @@
 	"settings.workspace.rootResolution.activeEditor.description": "Use the workspace folder containing the active editor; fall back to the first workspace folder. (Default — preserves legacy behavior.)",
 	"settings.workspace.rootResolution.firstFolder.description": "Always use the first workspace folder (workspaceFolders[0]). Deterministic — independent of which file is currently focused.",
 	"settings.remote.enabled.description": "**Enable Remote Control** — starts a local HTTPS/WebSocket server so the Zoo Remote Android app can see task status and approve/answer asks. The token and certificate fingerprint are shown in Settings → Remote Control.",
-	"settings.remote.port.description": "TCP port for the remote control server (default: 8999). Changing it while enabled restarts the server on the new port."
+	"settings.remote.port.description": "TCP port for the remote control server (default: 8999). Changing it while enabled restarts the server on the new port.",
+	"settings.remote.allowedIps.description": "**Allowed client IPs** — optional allowlist of IPv4/IPv6 addresses that may reach the remote server (empty = all allowed). Checked at socket level for REST and WebSocket connections alike."
 }

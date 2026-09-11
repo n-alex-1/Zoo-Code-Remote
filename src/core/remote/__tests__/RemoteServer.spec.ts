@@ -10,8 +10,9 @@ import { providerIdentifiers } from "@roo-code/types"
 import { allowNetConnect } from "../../../vitest.setup"
 
 import { extractBearerToken, generateRemoteToken, verifyRemoteToken } from "../RemoteAuth"
-import { computeFingerprint, loadOrCreateCertificate } from "../RemoteCertificate"
-import { RemoteServer } from "../RemoteServer"
+import { computeFingerprint, isValidCertificatePair, loadOrCreateCertificate } from "../RemoteCertificate"
+import { buildAllowedIpSet, isIpAllowed, normalizeClientIp } from "../remoteApi"
+import { RemotePortInUseError, RemoteServer } from "../RemoteServer"
 import type { RemoteActionSource, RemoteActivityPayload, RemoteStatus } from "../types"
 
 /** Fetch helper that accepts self-signed certificates (node:https supports rejectUnauthorized). */
@@ -347,12 +348,20 @@ describe("RemoteServer actions (Session 3)", () => {
 			setMode: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
 			listModes: async () => ({
 				ok: true as const,
-				modes: [{ slug: "code", name: "💻 Code" }, { slug: "ask", name: "❓ Ask" }],
+				modes: [
+					{ slug: "code", name: "💻 Code" },
+					{ slug: "ask", name: "❓ Ask" },
+				],
 			}),
 			listModels: async () => ({
 				ok: true as const,
 				profiles: [
-					{ id: "profile-a", name: "default", provider: providerIdentifiers.anthropic, modelId: "claude-sonnet-4-5" },
+					{
+						id: "profile-a",
+						name: "default",
+						provider: providerIdentifiers.anthropic,
+						modelId: "claude-sonnet-4-5",
+					},
 				],
 				currentModel: "claude-sonnet-4-5",
 			}),
@@ -382,22 +391,30 @@ describe("RemoteServer actions (Session 3)", () => {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON bodies are arbitrary in tests
 	): Promise<{ status: number; body: any }> {
 		return new Promise((resolve, reject) => {
-			const request = https.request(url, { method: "POST", rejectUnauthorized: false, headers: { "Content-Type": "application/json", ...headers } }, (response) => {
-				let data = ""
-				response.setEncoding("utf8")
-				response.on("data", (chunk: string) => {
-					data += chunk
-				})
-				response.on("end", () => {
-					let parsed: unknown
-					try {
-						parsed = JSON.parse(data)
-					} catch {
-						parsed = data
-					}
-					resolve({ status: response.statusCode ?? 0, body: parsed })
-				})
-			})
+			const request = https.request(
+				url,
+				{
+					method: "POST",
+					rejectUnauthorized: false,
+					headers: { "Content-Type": "application/json", ...headers },
+				},
+				(response) => {
+					let data = ""
+					response.setEncoding("utf8")
+					response.on("data", (chunk: string) => {
+						data += chunk
+					})
+					response.on("end", () => {
+						let parsed: unknown
+						try {
+							parsed = JSON.parse(data)
+						} catch {
+							parsed = data
+						}
+						resolve({ status: response.statusCode ?? 0, body: parsed })
+					})
+				},
+			)
 			request.on("error", reject)
 			request.end(JSON.stringify(body))
 		})
@@ -412,7 +429,13 @@ describe("RemoteServer actions (Session 3)", () => {
 		token = generateRemoteToken()
 		certDir = await fs.mkdtemp(path.join(os.tmpdir(), "zoo-remote-server3-"))
 		actions = createMockActions()
-		server = new RemoteServer({ port: 0, token, certDir, statusProvider: createMockBridge(), actionProvider: actions })
+		server = new RemoteServer({
+			port: 0,
+			token,
+			certDir,
+			statusProvider: createMockBridge(),
+			actionProvider: actions,
+		})
 		await server.start()
 	})
 
@@ -427,7 +450,10 @@ describe("RemoteServer actions (Session 3)", () => {
 			headers: { Authorization: `Bearer ${token}` },
 		})
 		expect(status).toBe(200)
-		expect(body.modes).toEqual([{ slug: "code", name: "💻 Code" }, { slug: "ask", name: "❓ Ask" }])
+		expect(body.modes).toEqual([
+			{ slug: "code", name: "💻 Code" },
+			{ slug: "ask", name: "❓ Ask" },
+		])
 	})
 
 	it("serves GET /api/models with profiles and currentModel", async () => {
@@ -441,36 +467,52 @@ describe("RemoteServer actions (Session 3)", () => {
 	})
 
 	it("POST /api/mode calls setMode and answers with the fresh status", async () => {
-		const { status, body } = await postJson(`https://localhost:${server.port}/api/mode`, { slug: "ask" }, {
-			Authorization: `Bearer ${token}`,
-		})
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/mode`,
+			{ slug: "ask" },
+			{
+				Authorization: `Bearer ${token}`,
+			},
+		)
 		expect(status).toBe(200)
 		expect(actions.setMode).toHaveBeenCalledWith("ask")
 		expect(body).toEqual(fakeStatus)
 	})
 
 	it("POST /api/mode with an invalid body answers 400", async () => {
-		const { status, body } = await postJson(`https://localhost:${server.port}/api/mode`, { nope: true }, {
-			Authorization: `Bearer ${token}`,
-		})
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/mode`,
+			{ nope: true },
+			{
+				Authorization: `Bearer ${token}`,
+			},
+		)
 		expect(status).toBe(400)
 		expect(body.error).toBe("invalid_body")
 		expect(actions.setMode).not.toHaveBeenCalled()
 	})
 
 	it("POST /api/model calls setModel and answers with the fresh status", async () => {
-		const { status, body } = await postJson(`https://localhost:${server.port}/api/model`, { profileId: "profile-a" }, {
-			Authorization: `Bearer ${token}`,
-		})
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/model`,
+			{ profileId: "profile-a" },
+			{
+				Authorization: `Bearer ${token}`,
+			},
+		)
 		expect(status).toBe(200)
 		expect(actions.setModel).toHaveBeenCalledWith("profile-a", undefined)
 		expect(body).toEqual(fakeStatus)
 	})
 
 	it("POST /api/model forwards the optional modelId", async () => {
-		await postJson(`https://localhost:${server.port}/api/model`, { profileId: "profile-a", modelId: "claude-opus-4" }, {
-			Authorization: `Bearer ${token}`,
-		})
+		await postJson(
+			`https://localhost:${server.port}/api/model`,
+			{ profileId: "profile-a", modelId: "claude-opus-4" },
+			{
+				Authorization: `Bearer ${token}`,
+			},
+		)
 		expect(actions.setModel).toHaveBeenCalledWith("profile-a", "claude-opus-4")
 	})
 
@@ -486,20 +528,36 @@ describe("RemoteServer actions (Session 3)", () => {
 	})
 
 	it("POST /api/ask/respond forwards text for messageResponse", async () => {
-		await postJson(`https://localhost:${server.port}/api/ask/respond`, { response: "messageResponse", text: "go" }, {
-			Authorization: `Bearer ${token}`,
-		})
+		await postJson(
+			`https://localhost:${server.port}/api/ask/respond`,
+			{ response: "messageResponse", text: "go" },
+			{
+				Authorization: `Bearer ${token}`,
+			},
+		)
 		expect(actions.respondToAsk).toHaveBeenCalledWith("messageResponse", "go")
 	})
 
 	it("answers 409 when respondToAsk reports no pending ask", async () => {
-		const actionsNoAsk = createMockActions({ respondToAsk: vi.fn(async () => ({ ok: false, error: "no_pending_ask" })) })
-		server = new RemoteServer({ port: 0, token, certDir, statusProvider: createMockBridge(), actionProvider: actionsNoAsk })
+		const actionsNoAsk = createMockActions({
+			respondToAsk: vi.fn(async () => ({ ok: false, error: "no_pending_ask" })),
+		})
+		server = new RemoteServer({
+			port: 0,
+			token,
+			certDir,
+			statusProvider: createMockBridge(),
+			actionProvider: actionsNoAsk,
+		})
 		await server.start()
 
-		const { status, body } = await postJson(`https://localhost:${server.port}/api/ask/respond`, { response: "yesButtonClicked" }, {
-			Authorization: `Bearer ${token}`,
-		})
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/ask/respond`,
+			{ response: "yesButtonClicked" },
+			{
+				Authorization: `Bearer ${token}`,
+			},
+		)
 		expect(status).toBe(409)
 		expect(body.error).toBe("no_pending_ask")
 
@@ -508,12 +566,22 @@ describe("RemoteServer actions (Session 3)", () => {
 
 	it("answers 400 for action failures other than pending-ask conflicts", async () => {
 		const actionsBad = createMockActions({ setMode: vi.fn(async () => ({ ok: false, error: "unknown_mode" })) })
-		server = new RemoteServer({ port: 0, token, certDir, statusProvider: createMockBridge(), actionProvider: actionsBad })
+		server = new RemoteServer({
+			port: 0,
+			token,
+			certDir,
+			statusProvider: createMockBridge(),
+			actionProvider: actionsBad,
+		})
 		await server.start()
 
-		const { status, body } = await postJson(`https://localhost:${server.port}/api/mode`, { slug: "nope" }, {
-			Authorization: `Bearer ${token}`,
-		})
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/mode`,
+			{ slug: "nope" },
+			{
+				Authorization: `Bearer ${token}`,
+			},
+		)
 		expect(status).toBe(400)
 		expect(body.error).toBe("unknown_mode")
 
@@ -523,7 +591,9 @@ describe("RemoteServer actions (Session 3)", () => {
 	it("answers 401 for action routes without a token", async () => {
 		const { status } = await fetchJson(`https://localhost:${server.port}/api/modes`)
 		expect(status).toBe(401)
-		const postStatus = (await postJson(`https://localhost:${server.port}/api/ask/respond`, { response: "yesButtonClicked" })).status
+		const postStatus = (
+			await postJson(`https://localhost:${server.port}/api/ask/respond`, { response: "yesButtonClicked" })
+		).status
 		expect(postStatus).toBe(401)
 	})
 
@@ -554,7 +624,11 @@ describe("RemoteServer actions (Session 3)", () => {
 		return new Promise<void>((resolve, reject) => {
 			const request = https.request(
 				`https://localhost:${server.port}/api/mode`,
-				{ method: "POST", rejectUnauthorized: false, headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` } },
+				{
+					method: "POST",
+					rejectUnauthorized: false,
+					headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+				},
 				(response) => {
 					let data = ""
 					response.setEncoding("utf8")
@@ -591,6 +665,245 @@ describe("RemoteServer actions (Session 3)", () => {
 			expect(limitedResponse.body.error).toBe("rate_limited")
 		} finally {
 			await limited.stop()
+		}
+	})
+})
+
+describe("Session 8a — IP normalization & allowlist (unit)", () => {
+	it("normalizes IPv4 and rejects non-literals", () => {
+		expect(normalizeClientIp("192.168.1.7")).toBe("192.168.1.7")
+		expect(normalizeClientIp("unknown")).toBeUndefined()
+		expect(normalizeClientIp("  ")).toBeUndefined()
+	})
+
+	it("normalizes IPv6: expands ::, lowercases, strips zone ids", () => {
+		expect(normalizeClientIp("::1")).toBe("0:0:0:0:0:0:0:1")
+		expect(normalizeClientIp("2001:DB8::1")).toBe("2001:db8:0:0:0:0:0:1")
+		expect(normalizeClientIp("fe80::1%eth0")).toBe("fe80:0:0:0:0:0:0:1")
+	})
+
+	it("normalizes IPv4-mapped IPv6 to the embedded IPv4 address", () => {
+		// Node reports loopback peers as ::ffff:127.0.0.1 (e.g. under nock's mock sockets) —
+		// allowlist entries like "127.0.0.1" must still match them.
+		expect(normalizeClientIp("::ffff:127.0.0.1")).toBe("127.0.0.1")
+		expect(normalizeClientIp("::FFFF:192.168.2.3")).toBe("192.168.2.3")
+		const set = buildAllowedIpSet(["127.0.0.1"])
+		expect(isIpAllowed("::ffff:127.0.0.1", set)).toBe(true)
+	})
+
+	it("builds the allowlist set and drops invalid entries", () => {
+		const logs: string[] = []
+		const set = buildAllowedIpSet(["192.168.1.7", "::1", "not-an-ip", ""], (line) => logs.push(line))
+		expect(set.has("192.168.1.7")).toBe(true)
+		expect(set.has("0:0:0:0:0:0:0:1")).toBe(true)
+		expect(set.size).toBe(2)
+		expect(logs.some((line) => line.includes("not-an-ip"))).toBe(true)
+
+		// empty/absent list = all allowed
+		expect(isIpAllowed("8.8.8.8", new Set())).toBe(true)
+	})
+
+	it("checks IPs against the allowlist (both loopback spellings)", () => {
+		const set = buildAllowedIpSet(["::1"])
+		expect(isIpAllowed("127.0.0.1", set)).toBe(false)
+		expect(isIpAllowed("::1", set)).toBe(true)
+		expect(isIpAllowed("fe80::1%eth0", set)).toBe(false)
+	})
+})
+
+describe("Session 8a — Härtung (integration)", () => {
+	beforeAll(() => {
+		// nock matches against "host:port/path" — keep the prefix form.
+		allowNetConnect(/^(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/)
+	})
+
+	let token: string
+	let certDir: string
+
+	beforeEach(async () => {
+		token = generateRemoteToken()
+		certDir = await fs.mkdtemp(path.join(os.tmpdir(), "zoo-remote-hardening-"))
+	})
+
+	afterEach(async () => {
+		await fs.rm(certDir, { recursive: true, force: true })
+		vi.restoreAllMocks()
+	})
+
+	it("keeps the bearer token out of all log lines (401 + 200 traffic)", async () => {
+		const logs: string[] = []
+		const server = new RemoteServer({ port: 0, token, certDir, log: (line) => logs.push(line) })
+		await server.start()
+		try {
+			const headers = { Authorization: `Bearer ${token}` }
+			await fetchJson(`https://127.0.0.1:${server.port}/api/status`) // 401 path
+			await fetchJson(`https://127.0.0.1:${server.port}/api/health`, { headers }) // 200 path
+		} finally {
+			await server.stop()
+		}
+		expect(logs.length).toBeGreaterThan(0)
+		for (const line of logs) {
+			expect(line).not.toContain(token)
+		}
+	})
+
+	it("rejects REST and WS from IPs outside remote.allowedIps, accepts listed ones", async () => {
+		const rejected = new RemoteServer({ port: 0, token, certDir, allowedIps: ["192.0.2.7"] })
+		await rejected.start()
+		try {
+			const health = await fetchJson(`https://127.0.0.1:${rejected.port}/api/health`)
+			expect(health.status).toBe(403)
+			expect(health.body.error).toBe("ip_not_allowed")
+
+			const status = await fetchJson(`https://127.0.0.1:${rejected.port}/api/status`, {
+				headers: { Authorization: `Bearer ${token}` },
+			})
+			expect(status.status).toBe(403)
+
+			// WS upgrade from 127.0.0.1 must also be refused (socket-level gate).
+			const wsError = await new Promise<string>((resolve, reject) => {
+				const socket = new WebSocket(`wss://127.0.0.1:${rejected.port}/events`, { rejectUnauthorized: false })
+				socket.once("open", () => resolve("unexpectedly opened"))
+				socket.once("error", (error) => resolve(error.message))
+			})
+			expect(wsError).not.toBe("unexpectedly opened")
+		} finally {
+			await rejected.stop()
+		}
+
+		const allowed = new RemoteServer({ port: 0, token, certDir, allowedIps: ["127.0.0.1"] })
+		await allowed.start()
+		try {
+			expect((await fetchJson(`https://127.0.0.1:${allowed.port}/api/health`)).status).toBe(200)
+			const socket = new WebSocket(`wss://127.0.0.1:${allowed.port}/events`, { rejectUnauthorized: false })
+			await new Promise<void>((resolve, reject) => {
+				socket.once("open", () => resolve())
+				socket.once("error", (error) => reject(error))
+			})
+			socket.close()
+		} finally {
+			await allowed.stop()
+		}
+	})
+
+	it("rate-limits WebSocket handshakes per IP (429 after the limit)", async () => {
+		const limited = new RemoteServer({ port: 0, token, certDir, wsRateLimitPerMinute: 2 })
+		await limited.start()
+		try {
+			const connectOnce = (expectOpen: boolean) =>
+				new Promise<boolean>((resolve) => {
+					const socket = new WebSocket(`wss://127.0.0.1:${limited.port}/events`, {
+						rejectUnauthorized: false,
+					})
+					socket.once("open", () => {
+						socket.close()
+						resolve(expectOpen ? true : false)
+					})
+					socket.once("error", () => resolve(expectOpen ? false : true))
+				})
+
+			expect(await connectOnce(true)).toBe(true) // 1st handshake allowed
+			expect(await connectOnce(true)).toBe(true) // 2nd handshake allowed
+			expect(await connectOnce(false)).toBe(true) // 3rd rejected (429 → socket destroyed)
+		} finally {
+			await limited.stop()
+		}
+	})
+
+	it("enforces TLS >= 1.2 (a client capped at TLS 1.1 fails the handshake)", async () => {
+		const server = new RemoteServer({ port: 0, token, certDir })
+		await server.start()
+		try {
+			const result = await new Promise<{ ok: boolean; error?: string }>((resolve) => {
+				const request = https.get(
+					{
+						host: "127.0.0.1",
+						port: server.port as number,
+						path: "/api/health",
+						rejectUnauthorized: false,
+						maxVersion: "TLSv1.1",
+					},
+					(response) => {
+						response.resume()
+						resolve({ ok: true }) // unexpected: handshake succeeded with < TLS 1.2
+					},
+				)
+				request.once("error", (error) => resolve({ ok: false, error: error.message }))
+			})
+			expect(result.ok).toBe(false)
+
+			// And a normal client still connects fine.
+			const healthy = await fetchJson(`https://127.0.0.1:${server.port}/api/health`)
+			expect(healthy.status).toBe(200)
+		} finally {
+			await server.stop()
+		}
+	})
+
+	it("regenerates a corrupt certificate pair instead of failing", async () => {
+		const first = await loadOrCreateCertificate(certDir)
+		expect(isValidCertificatePair(first.certPem, first.keyPem)).toBe(true)
+
+		// Corrupt the stored files (truncated cert + mismatched key).
+		await fs.writeFile(path.join(certDir, "remote-cert.pem"), "-----BEGIN CERTIFICATE-----\nabc\n")
+		const regenerated = await loadOrCreateCertificate(certDir)
+		expect(isValidCertificatePair(regenerated.certPem, regenerated.keyPem)).toBe(true)
+		expect(regenerated.fingerprint).not.toBe(first.fingerprint)
+
+		// A server can start with the regenerated pair.
+		const server = new RemoteServer({ port: 0, token, certDir })
+		await server.start()
+		try {
+			expect(server.fingerprint).toBe(regenerated.fingerprint)
+		} finally {
+			await server.stop()
+		}
+	})
+
+	it("detects EADDRINUSE and distinguishes own instance (degraded mode) from foreign processes", async () => {
+		const first = new RemoteServer({ port: 0, token, certDir })
+		await first.start()
+		const port = first.port as number
+
+		try {
+			// Same Zoo Remote server on the same port → ownInstance=true (degraded mode).
+			const second = new RemoteServer({ port, token, certDir: path.join(certDir, "second") })
+			let ownError: unknown
+			try {
+				await second.start()
+			} catch (error) {
+				ownError = error
+			}
+			expect(ownError).toBeInstanceOf(RemotePortInUseError)
+			expect((ownError as RemotePortInUseError).ownInstance).toBe(true)
+
+			// Free the port again, then occupy it with a foreign (non-Zoo-Remote) HTTPS process → ownInstance=false.
+			await first.stop()
+			const foreign = https.createServer((_req, res) => {
+				res.end("{}") // answers without our health payload → probe says "not ours"
+			})
+			await new Promise<void>((resolve, reject) => {
+				foreign.once("error", reject)
+				foreign.listen(port, () => resolve())
+			})
+			const third = new RemoteServer({ port, token, certDir: path.join(certDir, "third") })
+			let foreignError: unknown
+			try {
+				await third.start()
+			} catch (error) {
+				foreignError = error
+			}
+			expect(foreignError).toBeInstanceOf(RemotePortInUseError)
+			expect((foreignError as RemotePortInUseError).ownInstance).toBe(false)
+
+			await new Promise<void>((resolve, reject) => {
+				foreign.closeAllConnections?.()
+				foreign.close((error) => (error ? reject(error) : resolve()))
+			})
+		} finally {
+			if (first.isRunning) {
+				await first.stop().catch(() => undefined)
+			}
 		}
 	})
 })

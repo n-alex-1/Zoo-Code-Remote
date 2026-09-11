@@ -1,5 +1,6 @@
 import https from "https"
 import type { Server as HttpsServer, IncomingMessage, ServerResponse } from "http"
+import type { Duplex } from "stream"
 
 // `ws` is a CJS module using `export =`: default import = client class, named imports give
 // the server classes (namespace members of the exported entity).
@@ -7,9 +8,24 @@ import WebSocket, { WebSocketServer } from "ws"
 
 import { extractBearerToken, verifyRemoteToken } from "./RemoteAuth"
 import { loadOrCreateCertificate } from "./RemoteCertificate"
-import { clientIp, readJsonBody, RateLimiter, sendActionError, sendJson } from "./remoteApi"
-import { REMOTE_API_VERSION, REMOTE_DEFAULT_RATE_LIMIT_PER_MINUTE } from "./types"
-import type { RemoteActionResult, RemoteActivityPayload, RemoteCertificateInfo, RemoteEvent, RemoteServerOptions } from "./types"
+import {
+	buildAllowedIpSet,
+	clientIp,
+	isIpAllowed,
+	readJsonBody,
+	RateLimiter,
+	sendActionError,
+	sendJson,
+	socketIp,
+} from "./remoteApi"
+import { REMOTE_API_VERSION, REMOTE_DEFAULT_RATE_LIMIT_PER_MINUTE, REMOTE_WS_RATE_LIMIT_PER_MINUTE } from "./types"
+import type {
+	RemoteActionResult,
+	RemoteActivityPayload,
+	RemoteCertificateInfo,
+	RemoteEvent,
+	RemoteServerOptions,
+} from "./types"
 
 const WS_PATH = "/events"
 const HEALTH_PATH = "/api/health"
@@ -25,6 +41,25 @@ const WS_AUTH_TIMEOUT_MS = 5_000
 const WS_PING_INTERVAL_MS = 30_000
 
 type WsSocket = InstanceType<typeof WebSocket>
+
+/**
+ * Thrown when the configured port is already bound. `ownInstance` is true when a probe of
+ * `/api/health` on that port answered like another Zoo Remote server (i.e. a second VS Code
+ * window) — callers then run in degraded mode (log only, no warning).
+ */
+export class RemotePortInUseError extends Error {
+	constructor(
+		readonly ownInstance: boolean,
+		readonly port: number,
+	) {
+		super(
+			ownInstance
+				? `Remote port ${port} is already used by another Zoo Code window`
+				: `Remote port ${port} is already in use by another process`,
+		)
+		this.name = "RemotePortInUseError"
+	}
+}
 
 /**
  * Local HTTPS + WebSocket server exposing the Zoo Remote API.
@@ -47,11 +82,18 @@ export class RemoteServer {
 	private unsubscribeStatus?: () => void
 	private unsubscribeActivity?: () => void
 	private readonly rateLimiter: RateLimiter
+	/** Handshake limiter for `/events` upgrades (separate budget so one chatty REST peer cannot starve the socket, and vice versa). */
+	private readonly wsRateLimiter: RateLimiter
+	/** Normalized IP allowlist; empty set = all IPs allowed. Checked at socket level on both REST and WS upgrades. */
+	private readonly allowedIps: Set<string>
 
 	constructor(options: RemoteServerOptions) {
 		this.options = options
 		const limit = options.rateLimitPerMinute ?? REMOTE_DEFAULT_RATE_LIMIT_PER_MINUTE
 		this.rateLimiter = new RateLimiter(Number.isFinite(limit) ? limit : REMOTE_DEFAULT_RATE_LIMIT_PER_MINUTE)
+		const wsLimit = options.wsRateLimitPerMinute ?? REMOTE_WS_RATE_LIMIT_PER_MINUTE
+		this.wsRateLimiter = new RateLimiter(Number.isFinite(wsLimit) ? wsLimit : REMOTE_WS_RATE_LIMIT_PER_MINUTE)
+		this.allowedIps = buildAllowedIpSet(options.allowedIps, (line) => this.log(line))
 	}
 
 	get isRunning(): boolean {
@@ -77,12 +119,15 @@ export class RemoteServer {
 		}
 
 		this.log("Starting remote server on port " + this.options.port + "...")
-		this.certificate = await loadOrCreateCertificate(this.options.certDir)
+		this.certificate = await loadOrCreateCertificate(this.options.certDir, (line) => this.log(line))
 
 		const token = this.options.token
 
+		const wss = new WebSocketServer({ noServer: true })
+
 		this.server = https.createServer(
-			{ cert: this.certificate.certPem, key: this.certificate.keyPem },
+			// TLS 1.2 is the contract minimum (docs/architektur.md §1.2); Node's default may be higher, but never lower.
+			{ cert: this.certificate.certPem, key: this.certificate.keyPem, minVersion: "TLSv1.2" },
 			(req, res) => {
 				void this.handleRequest(token, req, res).catch((error) => {
 					this.log("Unhandled request error: " + (error instanceof Error ? error.message : String(error)))
@@ -93,11 +138,39 @@ export class RemoteServer {
 			},
 		)
 
-		const wss = new WebSocketServer({ server: this.server, path: WS_PATH })
 		wss.on("connection", (socket: WsSocket) => {
 			this.handleWebSocket(token, socket)
 		})
 		this.wss = wss
+
+		// Socket-level gate for the WS handshake: path check + IP allowlist + handshake rate limit.
+		// (REST keeps working on plain sockets; only /events upgrades to WebSocket.)
+		this.server.on("upgrade", (req, socket, head) => {
+			const rejectUpgrade = (statusLine: string, reason: string): void => {
+				this.log("WS upgrade rejected: " + reason)
+				// TLS may still be mid-handshake; a failed write on the destroyed socket must not crash the host.
+				socket.on("error", () => undefined)
+				socket.write(statusLine + "\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+				socket.destroy()
+			}
+
+			const ip = socketIp(req)
+			if ((req.url ?? "").split("?")[0] !== WS_PATH) {
+				rejectUpgrade("HTTP/1.1 404 Not Found", "unknown path")
+				return
+			}
+			if (!isIpAllowed(ip, this.allowedIps)) {
+				rejectUpgrade("HTTP/1.1 403 Forbidden", "IP not in remote.allowedIps")
+				return
+			}
+			if (!this.wsRateLimiter.allow(ip)) {
+				rejectUpgrade("HTTP/1.1 429 Too Many Requests", "handshake rate limit exceeded for IP")
+				return
+			}
+			wss.handleUpgrade(req, socket as unknown as Duplex, head, (ws) => {
+				wss.emit("connection", ws, req)
+			})
+		})
 
 		const statusProvider = this.options.statusProvider
 		if (statusProvider) {
@@ -126,12 +199,54 @@ export class RemoteServer {
 			})
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") {
-				throw new Error(`Remote port ${this.options.port} is already in use`)
+				const ownInstance = await this.probeOwnInstance(this.options.port)
+				throw new RemotePortInUseError(ownInstance, this.options.port)
 			}
 			throw error
 		}
 
 		this.log("Remote server listening on https://localhost:" + this.port)
+	}
+
+	/**
+	 * Checks whether the port that refused our bind is already answered by another Zoo Remote
+	 * instance (second VS Code window): `GET /api/health` must return 200 with `{ ok: true }`.
+	 * Any other outcome (foreign process, TLS error, timeout) counts as "not ours".
+	 */
+	private async probeOwnInstance(port: number): Promise<boolean> {
+		try {
+			const body = await new Promise<string>((resolve, reject) => {
+				const request = https.get(
+					{
+						host: "127.0.0.1",
+						port,
+						path: HEALTH_PATH,
+						method: "GET",
+						rejectUnauthorized: false,
+						timeout: 1500,
+					},
+					(response) => {
+						if (response.statusCode !== 200) {
+							response.resume()
+							reject(new Error("status " + response.statusCode))
+							return
+						}
+						let data = ""
+						response.setEncoding("utf8")
+						response.on("data", (chunk: string) => {
+							data += chunk
+						})
+						response.on("end", () => resolve(data))
+					},
+				)
+				request.on("timeout", () => request.destroy(new Error("probe timeout")))
+				request.on("error", reject)
+			})
+			const parsed = JSON.parse(body) as { ok?: unknown }
+			return parsed.ok === true
+		} catch {
+			return false
+		}
 	}
 
 	async stop(): Promise<void> {
@@ -156,6 +271,7 @@ export class RemoteServer {
 			server!.closeAllConnections?.()
 		})
 		this.rateLimiter.dispose()
+		this.wsRateLimiter.dispose()
 		this.log("Remote server stopped")
 	}
 
@@ -220,6 +336,12 @@ export class RemoteServer {
 
 	private async handleRequest(token: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
 		const url = (req.url ?? "/").split("?")[0]
+
+		// Socket-level allowlist gate for REST (same normalized socket IP as the WS upgrade path).
+		if (!isIpAllowed(socketIp(req), this.allowedIps)) {
+			sendJson(res, 403, { ok: false, error: "ip_not_allowed" })
+			return
+		}
 
 		if (url === HEALTH_PATH && req.method === "GET") {
 			sendJson(res, 200, { ok: true, version: REMOTE_API_VERSION })
@@ -343,7 +465,11 @@ export class RemoteServer {
 		}
 		const profileId = parsed.value.profileId
 		const modelId = parsed.value.modelId
-		if (typeof profileId !== "string" || !profileId.trim() || (modelId !== undefined && typeof modelId !== "string")) {
+		if (
+			typeof profileId !== "string" ||
+			!profileId.trim() ||
+			(modelId !== undefined && typeof modelId !== "string")
+		) {
 			sendJson(res, 400, { ok: false, error: "invalid_body" })
 			return
 		}
@@ -363,11 +489,17 @@ export class RemoteServer {
 		const response = parsed.value.response
 		const text = parsed.value.text
 		const validResponses = ["yesButtonClicked", "noButtonClicked", "messageResponse"] as const
-		if (!validResponses.includes(response as (typeof validResponses)[number]) || (text !== undefined && typeof text !== "string")) {
+		if (
+			!validResponses.includes(response as (typeof validResponses)[number]) ||
+			(text !== undefined && typeof text !== "string")
+		) {
 			sendJson(res, 400, { ok: false, error: "invalid_body" })
 			return
 		}
-		const result = await this.options.actionProvider!.respondToAsk(response as (typeof validResponses)[number], text)
+		const result = await this.options.actionProvider!.respondToAsk(
+			response as (typeof validResponses)[number],
+			text,
+		)
 		await this.finishAction(res, result)
 	}
 
@@ -384,7 +516,9 @@ export class RemoteServer {
 				sendJson(res, 200, status as unknown as Record<string, unknown>)
 				return
 			} catch (error) {
-				this.log("Failed to build post-action status: " + (error instanceof Error ? error.message : String(error)))
+				this.log(
+					"Failed to build post-action status: " + (error instanceof Error ? error.message : String(error)),
+				)
 			}
 		}
 		sendJson(res, 200, { ok: true })

@@ -5,10 +5,11 @@ import type { ClineProvider } from "../webview/ClineProvider"
 
 import { generateRemoteToken } from "./RemoteAuth"
 import { RemoteActions } from "./RemoteActions"
-import { RemoteServer } from "./RemoteServer"
+import { RemotePortInUseError, RemoteServer } from "./RemoteServer"
 import { RemoteStateBridge } from "./RemoteStateBridge"
 
 import {
+	REMOTE_ALLOWED_IPS_SETTING,
 	REMOTE_DEFAULT_PORT,
 	REMOTE_ENABLED_SETTING,
 	REMOTE_MAX_PORT,
@@ -35,7 +36,10 @@ export class RemoteControl implements vscode.Disposable {
 	private bridge?: RemoteStateBridge
 	private actions?: RemoteActions
 	private tokenPromise?: Promise<string>
+	/** Tracks the (non-blocking) initial start so dispose() can wait for it to settle. */
+	private startPromise?: Promise<void>
 	private configListener?: vscode.Disposable
+	private statusBarItem?: vscode.StatusBarItem
 
 	constructor(context: vscode.ExtensionContext, provider?: ClineProvider) {
 		this.context = context
@@ -44,12 +48,24 @@ export class RemoteControl implements vscode.Disposable {
 	}
 
 	async initialize(): Promise<void> {
-		await this.startIfEnabled()
+		// Start without blocking extension activation (Session 8a): certificate generation and the
+		// port bind happen in the background; failures are reported via OutputChannel + status bar.
+		this.startPromise = this.startIfEnabled().catch((error) => {
+			this.log("Remote server start failed: " + (error instanceof Error ? error.message : String(error)))
+			this.showPortWarning(this.getPort(), "Start fehlgeschlagen — Details im Output-Channel „Zoo Remote“")
+		})
 
 		this.configListener = vscode.workspace.onDidChangeConfiguration((event) => {
-			if (event.affectsConfiguration(this.enabledSettingKey()) || event.affectsConfiguration(this.portSettingKey())) {
+			if (
+				event.affectsConfiguration(this.enabledSettingKey()) ||
+				event.affectsConfiguration(this.portSettingKey()) ||
+				event.affectsConfiguration(this.allowedIpsSettingKey())
+			) {
 				void this.restartIfNecessary().catch((error) => {
-					this.log("Restart after settings change failed: " + (error instanceof Error ? error.message : String(error)))
+					this.log(
+						"Restart after settings change failed: " +
+							(error instanceof Error ? error.message : String(error)),
+					)
 				})
 			}
 		})
@@ -57,7 +73,9 @@ export class RemoteControl implements vscode.Disposable {
 
 	async dispose(): Promise<void> {
 		this.configListener?.dispose()
+		await this.startPromise?.catch(() => undefined) // let the background start settle before tearing down
 		await this.stopServer()
+		this.clearPortWarning()
 		this.outputChannel.dispose()
 	}
 
@@ -89,6 +107,10 @@ export class RemoteControl implements vscode.Disposable {
 		return `${PackageName}.${REMOTE_PORT_SETTING}`
 	}
 
+	private allowedIpsSettingKey(): string {
+		return `${PackageName}.${REMOTE_ALLOWED_IPS_SETTING}`
+	}
+
 	private isEnabled(): boolean {
 		const config = vscode.workspace.getConfiguration(PackageName)
 		return config.get<boolean>(REMOTE_ENABLED_SETTING, false) === true
@@ -101,6 +123,15 @@ export class RemoteControl implements vscode.Disposable {
 			return REMOTE_DEFAULT_PORT
 		}
 		return Math.min(Math.max(raw, REMOTE_MIN_PORT), REMOTE_MAX_PORT)
+	}
+
+	private getAllowedIps(): string[] {
+		const config = vscode.workspace.getConfiguration(PackageName)
+		const raw = config.get<unknown>(REMOTE_ALLOWED_IPS_SETTING, [])
+		if (!Array.isArray(raw)) {
+			return []
+		}
+		return raw.filter((entry): entry is string => typeof entry === "string")
 	}
 
 	private getToken(): Promise<string> {
@@ -124,9 +155,37 @@ export class RemoteControl implements vscode.Disposable {
 			return
 		}
 		const port = this.getPort()
-		await this.startServer(port)
+		try {
+			await this.startServer(port)
+		} catch (error) {
+			// Swallowed on purpose: handleStartFailure reports to OutputChannel/status bar and
+			// decides between degraded mode (other window) and a visible warning. Activation must not fail.
+			this.handleStartFailure(error, port)
+			return
+		}
+		this.clearPortWarning()
 		this.log(`Remote server enabled on https://<host>:${port}`)
 		this.log("Open Settings → Remote Control in Zoo Code to copy the token and certificate fingerprint.")
+	}
+
+	/**
+	 * Session 8a: EADDRINUSE is expected when a second VS Code window runs the same extension.
+	 * A health probe distinguishes "another Zoo Code window" (degraded mode — log only, no warning)
+	 * from any foreign process on the port (status-bar warning + OutputChannel message).
+	 */
+	private handleStartFailure(error: unknown, port: number): void {
+		if (error instanceof RemotePortInUseError && error.ownInstance) {
+			this.log(
+				`Remote server in degraded mode — port ${port} is already served by another Zoo Code window; this window only logs.`,
+			)
+			return
+		}
+		const message =
+			error instanceof RemotePortInUseError
+				? `Remote-Port ${port} ist bereits belegt (anderer Prozess).`
+				: "Remote-Server konnte nicht gestartet werden — Details im Output-Channel „Zoo Remote“."
+		this.log(message)
+		this.showPortWarning(port, message)
 	}
 
 	private async startServer(port: number): Promise<void> {
@@ -145,12 +204,15 @@ export class RemoteControl implements vscode.Disposable {
 			this.actions = new RemoteActions(this.provider, (line) => this.log(line))
 		} else {
 			this.actions = undefined
-			this.log("No ClineProvider supplied — remote status/action APIs fall back to 503 until Session wiring is complete.")
+			this.log(
+				"No ClineProvider supplied — remote status/action APIs fall back to 503 until Session wiring is complete.",
+			)
 		}
 
 		const statusProvider: RemoteStatusProvider | undefined = this.bridge ?? undefined
 		const actionProvider: RemoteActionSource | undefined = this.actions ?? undefined
 
+		const allowedIps = this.getAllowedIps()
 		try {
 			this.server = new RemoteServer({
 				port,
@@ -159,6 +221,7 @@ export class RemoteControl implements vscode.Disposable {
 				statusProvider,
 				actionProvider,
 				log: (line) => this.log(line),
+				allowedIps,
 			})
 			await this.server.start()
 		} catch (error) {
@@ -192,18 +255,47 @@ export class RemoteControl implements vscode.Disposable {
 		const port = this.getPort()
 		const running = this.server?.isRunning ?? false
 
-		if (enabled && !running) {
-			await this.startServer(port)
-		} else if (!enabled && running) {
+		if (!enabled && running) {
 			await this.stopServer()
-		} else if (enabled && running && this.server!.port !== port) {
-			// Port changed while active → restart on the new port.
-			await this.startServer(port)
+			return
+		}
+
+		// Not enabled and not running → nothing to do. Otherwise start or restart: the listener
+		// only fires for remote.* settings, so a change while running means port or allowedIps
+		// moved — both are passed at construction time, hence a full restart picks them up.
+		if (enabled) {
+			try {
+				await this.startServer(port)
+				this.clearPortWarning()
+			} catch (error) {
+				this.handleStartFailure(error, port)
+			}
 		}
 	}
 
 	private log(line: string): void {
 		this.outputChannel.appendLine(line)
+	}
+
+	/** Shows a status-bar warning for remote start problems (created lazily — only on failure). */
+	private showPortWarning(port: number, message: string): void {
+		if (!this.statusBarItem) {
+			this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50)
+			this.statusBarItem.command = "vscode.openOutput"
+			this.statusBarItem.tooltip = "Zoo Remote — Details im Output-Channel"
+		}
+		this.statusBarItem.text = `$(warning) Zoo Remote :${port}`
+		this.statusBarItem.name = message
+		this.statusBarItem.show()
+	}
+
+	private clearPortWarning(): void {
+		if (this.server?.isRunning) {
+			this.statusBarItem?.hide()
+		} else {
+			this.statusBarItem?.dispose()
+			this.statusBarItem = undefined
+		}
 	}
 }
 

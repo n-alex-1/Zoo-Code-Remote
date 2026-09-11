@@ -20,6 +20,9 @@ export const REMOTE_API_VERSION = "1"
 /** Default rate limit for REST routes: requests per minute per client IP. */
 export const REMOTE_DEFAULT_RATE_LIMIT_PER_MINUTE = 60
 
+/** Default rate limit for WebSocket handshakes on `/events`: connections per minute per client IP. */
+export const REMOTE_WS_RATE_LIMIT_PER_MINUTE = 30
+
 /** Default port, chosen to avoid well-known dev/service ports. */
 export const REMOTE_DEFAULT_PORT = 8999
 
@@ -32,6 +35,7 @@ export const REMOTE_TOKEN_SECRET_KEY = "zooRemote.token"
 /** VS Code configuration keys (contributes.configuration in src/package.json). */
 export const REMOTE_ENABLED_SETTING = "remote.enabled" as const
 export const REMOTE_PORT_SETTING = "remote.port" as const
+export const REMOTE_ALLOWED_IPS_SETTING = "remote.allowedIps" as const
 
 export interface RemoteServerOptions {
 	/** TCP port to listen on. */
@@ -48,6 +52,10 @@ export interface RemoteServerOptions {
 	actionProvider?: RemoteActionSource
 	/** Rate limit for REST routes: requests per minute per client IP (default {@link REMOTE_DEFAULT_RATE_LIMIT_PER_MINUTE}). Set to `0`/negative to disable. */
 	rateLimitPerMinute?: number
+	/** Optional allowlist of client IPs (IPv4 or IPv6, exact match after normalization). Empty/undefined = all IPs allowed. Applied at socket level on REST and WS upgrades alike. */
+	allowedIps?: string[]
+	/** Rate limit for WebSocket handshakes on `/events`: connections per minute per client IP (default {@link REMOTE_WS_RATE_LIMIT_PER_MINUTE}). Set to `0`/negative to disable. */
+	wsRateLimitPerMinute?: number
 }
 
 /** Minimal surface of the state bridge (RemoteStateBridge) that the server needs. Declared structurally so tests can use plain mocks. */
@@ -173,7 +181,9 @@ export interface RemoteAskRespondCommand {
 }
 
 /** Result object returned by {@link RemoteActionSource} methods (no exceptions leak). */
-export type RemoteActionResult<T = undefined> = T extends undefined ? { ok: boolean; error?: string } : { ok: true } & T | { ok: false; error: string }
+export type RemoteActionResult<T = undefined> = T extends undefined
+	? { ok: boolean; error?: string }
+	: ({ ok: true } & T) | { ok: false; error: string }
 
 /* ------------------------------------------------------------------ *
  * Structural source interfaces — the minimal surface of ClineProvider /
@@ -230,7 +240,7 @@ export interface RemoteActionSource {
 	/** All modes incl. custom modes. */
 	listModes(): Promise<{ ok: true; modes: ModeInfo[] } | { ok: false; error: string }>
 	/** Provider profiles with current model info (see RemoteModelsResponse). */
-	listModels(): Promise<{ ok: true } & RemoteModelsResponse | { ok: false; error: string }>
+	listModels(): Promise<({ ok: true } & RemoteModelsResponse) | { ok: false; error: string }>
 	/** Activate a provider profile by id, optionally overriding the model. Failure for unknown ids. */
 	setModel(profileId: string, modelId?: string): Promise<RemoteActionResult>
 }
