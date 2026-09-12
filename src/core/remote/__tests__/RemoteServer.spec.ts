@@ -342,10 +342,29 @@ describe("RemoteServer actions (Session 3)", () => {
 		model: { profileName: "default", modelId: "claude-sonnet-4-5", provider: providerIdentifiers.anthropic },
 	}
 
-	function createMockActions(overrides: Partial<RemoteActionSource> = {}): RemoteActionSource {
+	function createMockActions(
+		overrides: Partial<RemoteActionSource> = {},
+	): RemoteActionSource & { listTasksCalls: Array<[string?]> } {
+		const listTasks = vi.fn(async (workspace?: string) => ({
+			ok: true as const,
+			tasks: workspace
+				? [{ taskId: "task-1", ts: 1000, task: `Session one in ${workspace}` }]
+				: [{ taskId: "task-1", ts: 1000, task: "Session one" }],
+		}))
 		return {
+			listTasksCalls: listTasks.mock.calls as Array<[string?]>,
 			respondToAsk: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
 			setMode: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
+			// Session 9 surfaces.
+			listTasks,
+			startTask: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
+			openTask: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
+			cancelTask: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
+			listWorkspaces: async () => ({
+				ok: true as const,
+				workspaces: [{ path: "/tmp/project", name: "Project" }],
+			}),
+			openWorkspace: vi.fn(async (): Promise<{ ok: boolean; error?: string }> => ({ ok: true })),
 			listModes: async () => ({
 				ok: true as const,
 				modes: [
@@ -643,6 +662,101 @@ describe("RemoteServer actions (Session 3)", () => {
 			request.on("error", reject)
 			request.end("{ not json")
 		})
+	})
+
+	it("session 9: serves GET /api/tasks", async () => {
+		const { status, body } = await fetchJson(`https://localhost:${server.port}/api/tasks`, {
+			headers: { Authorization: `Bearer ${token}` },
+		})
+		expect(status).toBe(200)
+		expect(body.tasks).toEqual([{ taskId: "task-1", ts: 1000, task: "Session one" }])
+		expect(actions.listTasksCalls.at(-1)).toEqual([undefined])
+	})
+
+	it("session 9: forwards the ?workspace= filter of GET /api/tasks (decoded)", async () => {
+		const encoded = encodeURIComponent("/tmp/project with space")
+		const { status, body } = await fetchJson(`https://localhost:${server.port}/api/tasks?workspace=${encoded}`, {
+			headers: { Authorization: `Bearer ${token}` },
+		})
+		expect(status).toBe(200)
+		expect(actions.listTasksCalls.at(-1)).toEqual(["/tmp/project with space"])
+		expect(body.tasks[0].task).toContain("/tmp/project with space")
+
+		// Blank parameter = no filtering.
+		await fetchJson(`https://localhost:${server.port}/api/tasks?workspace=%20%20`, {
+			headers: { Authorization: `Bearer ${token}` },
+		})
+		expect(actions.listTasksCalls.at(-1)).toEqual([undefined])
+	})
+
+	it("session 9: POST /api/task/start calls startTask and answers with the fresh status", async () => {
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/task/start`,
+			{ text: "build me a thing" },
+			{ Authorization: `Bearer ${token}` },
+		)
+		expect(status).toBe(200)
+		expect(actions.startTask).toHaveBeenCalledWith("build me a thing")
+		expect(body).toEqual(fakeStatus)
+	})
+
+	it("session 9: POST /api/task/start with an empty text answers 400", async () => {
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/task/start`,
+			{ text: "   " },
+			{ Authorization: `Bearer ${token}` },
+		)
+		expect(status).toBe(400)
+		expect(body.error).toBe("invalid_body")
+		expect(actions.startTask).not.toHaveBeenCalled()
+	})
+
+	it("session 9: POST /api/task/open calls openTask and answers with the fresh status", async () => {
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/task/open`,
+			{ taskId: "task-1" },
+			{ Authorization: `Bearer ${token}` },
+		)
+		expect(status).toBe(200)
+		expect(actions.openTask).toHaveBeenCalledWith("task-1")
+		expect(body).toEqual(fakeStatus)
+	})
+
+	it("session 9: POST /api/task/cancel works with an empty body", async () => {
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/task/cancel`,
+			{},
+			{ Authorization: `Bearer ${token}` },
+		)
+		expect(status).toBe(200)
+		expect(actions.cancelTask).toHaveBeenCalledTimes(1)
+		expect(body).toEqual(fakeStatus)
+	})
+
+	it("session 9: serves GET /api/workspaces", async () => {
+		const { status, body } = await fetchJson(`https://localhost:${server.port}/api/workspaces`, {
+			headers: { Authorization: `Bearer ${token}` },
+		})
+		expect(status).toBe(200)
+		expect(body.workspaces).toEqual([{ path: "/tmp/project", name: "Project" }])
+	})
+
+	it("session 9: POST /api/workspace/open calls openWorkspace and answers with the fresh status", async () => {
+		const { status, body } = await postJson(
+			`https://localhost:${server.port}/api/workspace/open`,
+			{ path: "/tmp/project" },
+			{ Authorization: `Bearer ${token}` },
+		)
+		expect(status).toBe(200)
+		expect(actions.openWorkspace).toHaveBeenCalledWith("/tmp/project")
+		expect(body).toEqual(fakeStatus)
+	})
+
+	it("session 9: task/workspace routes require auth and answer 401 without a token", async () => {
+		expect((await fetchJson(`https://localhost:${server.port}/api/tasks`)).status).toBe(401)
+		expect((await fetchJson(`https://localhost:${server.port}/api/workspaces`)).status).toBe(401)
+		const postStatus = (await postJson(`https://localhost:${server.port}/api/task/cancel`, {})).status
+		expect(postStatus).toBe(401)
 	})
 
 	it("rate-limits REST requests per IP (429 after the limit)", async () => {

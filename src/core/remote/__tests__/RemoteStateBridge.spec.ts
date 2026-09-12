@@ -28,12 +28,10 @@ function createMockTask(overrides: Partial<MockTask> = {}): MockTask {
 		abort: false,
 		abandoned: false,
 		clineMessages: [],
-		on: (
-			(event: string | symbol, listener: (...args: unknown[]) => void) => emitter.on(event, listener)
-		) as unknown as MockTask["on"],
-		off: (
-			(event: string | symbol, listener: (...args: unknown[]) => void) => emitter.off(event, listener)
-		) as unknown as MockTask["off"],
+		on: ((event: string | symbol, listener: (...args: unknown[]) => void) =>
+			emitter.on(event, listener)) as unknown as MockTask["on"],
+		off: ((event: string | symbol, listener: (...args: unknown[]) => void) =>
+			emitter.off(event, listener)) as unknown as MockTask["off"],
 		...overrides,
 	} as unknown as MockTask
 	mockTaskEmitters.set(task, emitter)
@@ -135,7 +133,9 @@ function makeTokenUsage(contextTokens: number) {
 const modelInfoWithWindow = (contextWindow: number): ModelInfo =>
 	({ maxTokens: null, contextWindow, supportsPromptCache: false }) as unknown as ModelInfo
 
-function createMockTaskWithContext(overrides: Partial<MockTask> & { tokenUsage?: unknown; api?: RemoteTaskSource["api"] } = {}): MockTask {
+function createMockTaskWithContext(
+	overrides: Partial<MockTask> & { tokenUsage?: unknown; api?: RemoteTaskSource["api"] } = {},
+): MockTask {
 	const { tokenUsage, api, ...rest } = overrides
 	return createMockTask({
 		tokenUsage: undefined,
@@ -240,11 +240,18 @@ describe("buildRemoteStatus", () => {
 			tokenUsage: makeTokenUsage(123_456),
 			api: { getModel: () => ({ id: "claude-sonnet-4-5", info: modelInfoWithWindow(200_000) }) },
 		})
-		expect(buildRemoteStatus(baseState, task).task.contextWindow).toEqual({ used: 123_456, limit: 200_000, percent: 61.73 })
+		expect(buildRemoteStatus(baseState, task).task.contextWindow).toEqual({
+			used: 123_456,
+			limit: 200_000,
+			percent: 61.73,
+		})
 	})
 
 	it("reports only `used` when the model context window is unknown", () => {
-		const noModelInfo = createMockTaskWithContext({ taskStatus: TaskStatus.Running, tokenUsage: makeTokenUsage(50_000) })
+		const noModelInfo = createMockTaskWithContext({
+			taskStatus: TaskStatus.Running,
+			tokenUsage: makeTokenUsage(50_000),
+		})
 		expect(buildRemoteStatus(baseState, noModelInfo).task.contextWindow).toEqual({ used: 50_000 })
 
 		const zeroWindow = createMockTaskWithContext({
@@ -257,7 +264,11 @@ describe("buildRemoteStatus", () => {
 		const throwingGetModel = createMockTaskWithContext({
 			taskStatus: TaskStatus.Running,
 			tokenUsage: makeTokenUsage(50_000),
-			api: { getModel: () => { throw new Error("boom") } },
+			api: {
+				getModel: () => {
+					throw new Error("boom")
+				},
+			},
 		})
 		expect(buildRemoteStatus(baseState, throwingGetModel).task.contextWindow).toEqual({ used: 50_000 })
 	})
@@ -287,7 +298,12 @@ describe("buildRemoteStatus", () => {
 	it("does not set suggestions for non-followup asks or unparseable followup text", () => {
 		const toolAsk = createMockTask({
 			taskStatus: TaskStatus.Interactive,
-			taskAsk: makeMessage({ ts: 8, type: "ask", ask: "tool", text: JSON.stringify({ suggest: [{ answer: "x" }] }) }),
+			taskAsk: makeMessage({
+				ts: 8,
+				type: "ask",
+				ask: "tool",
+				text: JSON.stringify({ suggest: [{ answer: "x" }] }),
+			}),
 		})
 		expect(buildRemoteStatus(baseState, toolAsk).task.pendingAsk?.suggestions).toBeUndefined()
 
@@ -342,7 +358,9 @@ describe("parseFollowUpSuggestions", () => {
 	it("returns undefined when suggest is missing or no entry has a usable answer", () => {
 		expect(parseFollowUpSuggestions(JSON.stringify({ question: "q" }), KNOWN_MODES)).toBeUndefined()
 		expect(parseFollowUpSuggestions(JSON.stringify({ suggest: "nope" }), KNOWN_MODES)).toBeUndefined()
-		expect(parseFollowUpSuggestions(JSON.stringify({ suggest: [{}, { answer: "" }, { answer: 7 }] }), KNOWN_MODES)).toBeUndefined()
+		expect(
+			parseFollowUpSuggestions(JSON.stringify({ suggest: [{}, { answer: "" }, { answer: 7 }] }), KNOWN_MODES),
+		).toBeUndefined()
 	})
 
 	it("truncates to the first 4 suggestions and answers to 200 characters", () => {
@@ -358,7 +376,12 @@ describe("parseFollowUpSuggestions", () => {
 	})
 
 	it("drops unknown mode slugs but keeps the answer", () => {
-		const text = JSON.stringify({ suggest: [{ answer: "A", mode: "nope" }, { answer: "B", mode: "" }] })
+		const text = JSON.stringify({
+			suggest: [
+				{ answer: "A", mode: "nope" },
+				{ answer: "B", mode: "" },
+			],
+		})
 		expect(parseFollowUpSuggestions(text, KNOWN_MODES)).toEqual([{ answer: "A" }, { answer: "B" }])
 	})
 })
@@ -496,5 +519,49 @@ describe("RemoteStateBridge", () => {
 		const status = await bridge.buildStatus()
 		expect(status.task.state).toBe("waiting_for_input")
 		expect(status.task.pendingAsk?.canApprove).toBe(true)
+	})
+
+	it("session 9: exposes the extension host workspace in connection.workspace", async () => {
+		provider.state.cwd = "/workspaces/zoo-remote"
+		const status = await bridge.buildStatus()
+		expect(status.connection.workspace).toBe("/workspaces/zoo-remote")
+
+		// No folder open → field omitted (undefined), not an empty string.
+		delete provider.state.cwd
+		expect((await bridge.buildStatus()).connection.workspace).toBeUndefined()
+	})
+
+	it("session 9: emits an activity snapshot when the tracked task switches, but not for the same taskId", () => {
+		const snapshots: Array<RemoteActivityPayload[]> = []
+		bridge.subscribeActivitySnapshot((payloads) => snapshots.push(payloads))
+
+		const firstTask = createMockTask({
+			taskId: "task-a",
+			clineMessages: [makeMessage({ ts: 1, say: "text", text: "from a" })],
+		})
+		const secondTask = createMockTask({
+			taskId: "task-b",
+			clineMessages: [
+				makeMessage({ ts: 2, say: "text", text: "from b" }),
+				makeMessage({ ts: 3, say: "text", text: "b again" }),
+			],
+		})
+
+		// Starting while a task is already tracked → one snapshot of that task's feed (clients
+		// replace their accumulated feed with the authoritative history — same as the connect snapshot).
+		provider.task = firstTask
+		bridge.start()
+		expect(snapshots).toHaveLength(1)
+		expect(snapshots[0].map((entry) => entry.ts)).toEqual([1])
+
+		// Switch to a different task → snapshot of the new task's feed.
+		provider.task = secondTask
+		provider.emit(RooCodeEventName.TaskCreated, secondTask as unknown as TaskLike)
+		expect(snapshots).toHaveLength(2)
+		expect(snapshots[1].map((entry) => entry.ts)).toEqual([2, 3])
+
+		// Re-attaching the same task (rehydration via TaskCreated with the same taskId) → no new snapshot.
+		provider.emit(RooCodeEventName.TaskCreated, secondTask as unknown as TaskLike)
+		expect(snapshots).toHaveLength(2)
 	})
 })

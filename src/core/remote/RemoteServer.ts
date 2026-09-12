@@ -35,6 +35,13 @@ const MODE_PATH = "/api/mode"
 const MODELS_PATH = "/api/models"
 const MODEL_PATH = "/api/model"
 const ASK_RESPOND_PATH = "/api/ask/respond"
+// Session 9: task history & workspaces.
+const TASKS_PATH = "/api/tasks"
+const TASK_START_PATH = "/api/task/start"
+const TASK_OPEN_PATH = "/api/task/open"
+const TASK_CANCEL_PATH = "/api/task/cancel"
+const WORKSPACES_PATH = "/api/workspaces"
+const WORKSPACE_OPEN_PATH = "/api/workspace/open"
 /** Max time a WebSocket client has to send its auth frame. */
 const WS_AUTH_TIMEOUT_MS = 5_000
 /** Keepalive ping interval (matches the API contract). */
@@ -81,6 +88,7 @@ export class RemoteServer {
 	private clients = new Set<WsSocket>()
 	private unsubscribeStatus?: () => void
 	private unsubscribeActivity?: () => void
+	private unsubscribeActivitySnapshot?: () => void
 	private readonly rateLimiter: RateLimiter
 	/** Handshake limiter for `/events` upgrades (separate budget so one chatty REST peer cannot starve the socket, and vice versa). */
 	private readonly wsRateLimiter: RateLimiter
@@ -184,6 +192,13 @@ export class RemoteServer {
 					this.sendEvent(client, { type: "message", payload })
 				}
 			})
+			if (statusProvider.subscribeActivitySnapshot) {
+				this.unsubscribeActivitySnapshot = statusProvider.subscribeActivitySnapshot((payloads) => {
+					for (const client of [...this.clients]) {
+						this.sendEvent(client, { type: "activity_snapshot", payload: payloads })
+					}
+				})
+			}
 		}
 
 		try {
@@ -258,8 +273,10 @@ export class RemoteServer {
 
 		this.unsubscribeStatus?.()
 		this.unsubscribeActivity?.()
+		this.unsubscribeActivitySnapshot?.()
 		this.unsubscribeStatus = undefined
 		this.unsubscribeActivity = undefined
+		this.unsubscribeActivitySnapshot = undefined
 		this.clients.clear()
 		this.server = undefined
 		this.wss = undefined
@@ -399,6 +416,37 @@ export class RemoteServer {
 			return
 		}
 
+		// Session 9: task history & workspaces.
+		if (url === TASKS_PATH && method === "GET") {
+			await this.handleListTasks(req, res)
+			return
+		}
+
+		if (url === TASK_START_PATH && method === "POST") {
+			await this.handleStartTask(req, res)
+			return
+		}
+
+		if (url === TASK_OPEN_PATH && method === "POST") {
+			await this.handleOpenTask(req, res)
+			return
+		}
+
+		if (url === TASK_CANCEL_PATH && method === "POST") {
+			await this.handleCancelTask(req, res)
+			return
+		}
+
+		if (url === WORKSPACES_PATH && method === "GET") {
+			await this.handleListWorkspaces(req, res)
+			return
+		}
+
+		if (url === WORKSPACE_OPEN_PATH && method === "POST") {
+			await this.handleOpenWorkspace(req, res)
+			return
+		}
+
 		sendJson(res, 404, { ok: false, error: "not_found", path: url })
 	}
 
@@ -500,6 +548,109 @@ export class RemoteServer {
 			response as (typeof validResponses)[number],
 			text,
 		)
+		await this.finishAction(res, result)
+	}
+
+	/* ------------------------------------------------------------------ *
+	 * Session 9 — task history & workspaces handlers.
+	 * ------------------------------------------------------------------ */
+
+	private async handleListTasks(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.requireActions(res)) {
+			return
+		}
+		// Optional `?workspace=<path>` filter — the app passes the extension host's workspace from
+		// the status so the picker shows exactly what the webview's history would show.
+		const query = new URLSearchParams((req.url ?? "").split("?")[1] ?? "")
+		const workspaceParam = query.get("workspace")?.trim()
+		const result = await this.options.actionProvider!.listTasks(workspaceParam || undefined)
+		if (result.ok) {
+			sendJson(res, 200, { tasks: result.tasks })
+		} else {
+			sendActionError(res, result.error)
+		}
+		void req
+	}
+
+	private async handleStartTask(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.requireActions(res)) {
+			return
+		}
+		const parsed = await readJsonBody(req)
+		if (!parsed.ok) {
+			sendJson(res, 400, { ok: false, error: parsed.error })
+			return
+		}
+		const text = parsed.value.text
+		if (typeof text !== "string" || !text.trim()) {
+			sendJson(res, 400, { ok: false, error: "invalid_body" })
+			return
+		}
+		const result = await this.options.actionProvider!.startTask(text)
+		await this.finishAction(res, result)
+	}
+
+	private async handleOpenTask(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.requireActions(res)) {
+			return
+		}
+		const parsed = await readJsonBody(req)
+		if (!parsed.ok) {
+			sendJson(res, 400, { ok: false, error: parsed.error })
+			return
+		}
+		const taskId = parsed.value.taskId
+		if (typeof taskId !== "string" || !taskId.trim()) {
+			sendJson(res, 400, { ok: false, error: "invalid_body" })
+			return
+		}
+		const result = await this.options.actionProvider!.openTask(taskId)
+		await this.finishAction(res, result)
+	}
+
+	private async handleCancelTask(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.requireActions(res)) {
+			return
+		}
+		// Body-less action (the app sends `{` `}`); accept any parseable/empty body.
+		const parsed = await readJsonBody(req)
+		if (!parsed.ok && parsed.error !== "invalid_json") {
+			sendJson(res, 400, { ok: false, error: parsed.error })
+			return
+		}
+		const result = await this.options.actionProvider!.cancelTask()
+		await this.finishAction(res, result)
+		void req
+	}
+
+	private async handleListWorkspaces(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.requireActions(res)) {
+			return
+		}
+		const result = await this.options.actionProvider!.listWorkspaces()
+		if (result.ok) {
+			sendJson(res, 200, { workspaces: result.workspaces })
+		} else {
+			sendActionError(res, result.error)
+		}
+		void req
+	}
+
+	private async handleOpenWorkspace(req: IncomingMessage, res: ServerResponse): Promise<void> {
+		if (!this.requireActions(res)) {
+			return
+		}
+		const parsed = await readJsonBody(req)
+		if (!parsed.ok) {
+			sendJson(res, 400, { ok: false, error: parsed.error })
+			return
+		}
+		const workspacePath = parsed.value.path
+		if (typeof workspacePath !== "string" || !workspacePath.trim()) {
+			sendJson(res, 400, { ok: false, error: "invalid_body" })
+			return
+		}
+		const result = await this.options.actionProvider!.openWorkspace(workspacePath)
 		await this.finishAction(res, result)
 	}
 

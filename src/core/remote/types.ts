@@ -1,5 +1,6 @@
 import type {
 	ClineMessage,
+	HistoryItem,
 	ModelInfo,
 	ProviderSettingsEntry,
 	TaskEvents,
@@ -64,6 +65,8 @@ export interface RemoteStatusProvider {
 	getRecentActivity(limit?: number): RemoteActivityPayload[]
 	subscribe(listener: (status: RemoteStatus) => void): () => void
 	subscribeActivity(listener: (payload: RemoteActivityPayload) => void): () => void
+	/** Fired with the active task's recent feed entries when its tracked task switches to a different taskId. */
+	subscribeActivitySnapshot?(listener: (payloads: RemoteActivityPayload[]) => void): () => void
 }
 
 export interface RemoteCertificateInfo {
@@ -91,7 +94,12 @@ export type RemoteTaskState = "idle" | "running" | "waiting_for_input" | "comple
 
 /** `GET /api/status` response and payload of WS `status` events. */
 export interface RemoteStatus {
-	connection: { extensionVersion: string; apiVersion: typeof REMOTE_API_VERSION }
+	connection: {
+		extensionVersion: string
+		apiVersion: typeof REMOTE_API_VERSION
+		/** Workspace folder of the extension host (its `cwd`); undefined when no folder is open. */
+		workspace?: string
+	}
 	task: {
 		state: RemoteTaskState
 		taskId?: string
@@ -136,6 +144,12 @@ export interface RemoteActivityPayload {
 export type RemoteEvent =
 	| { type: "status"; payload: RemoteStatus }
 	| { type: "message"; payload: RemoteActivityPayload }
+	/**
+	 * Replaces the app's whole activity feed with the given entries (the history of the active
+	 * task). Sent on connect and whenever the plugin switches to a different task, so switching
+	 * sessions from the app shows the right content without a reconnect.
+	 */
+	| { type: "activity_snapshot"; payload: RemoteActivityPayload[] }
 	| { type: "ping" }
 
 /** `GET /api/modes` response. */
@@ -154,6 +168,55 @@ export interface ProfileInfo extends Pick<ProviderSettingsEntry, "id" | "name"> 
 export interface RemoteModelsResponse {
 	profiles: ProfileInfo[]
 	currentModel: string
+}
+
+/* ------------------------------------------------------------------ *
+ * Session 9 — task history & recently used workspaces (contract §3).
+ * ------------------------------------------------------------------ */
+
+/** One entry of the task history (`GET /api/tasks`) — a slender subset of `HistoryItem`. */
+export interface RemoteTaskInfo {
+	/** HistoryItem.id. */
+	taskId: string
+	/** Start timestamp (ms) — list is sorted descending. */
+	ts: number
+	/** Task title, truncated to 200 chars. */
+	task: string
+	mode?: string
+	status?: "active" | "completed" | "delegated" | "interrupted"
+	workspace?: string
+}
+
+/** `GET /api/tasks` response — newest first, max 50 entries. */
+export interface RemoteTasksResponse {
+	tasks: RemoteTaskInfo[]
+}
+
+/** A recently used VS Code workspace (`GET /api/workspaces`). */
+export interface RemoteWorkspaceInfo {
+	/** Workspace/project folder path (for `code <path>`). */
+	path: string
+	name?: string
+}
+
+/** `GET /api/workspaces` response — newest first, max 10 entries. */
+export interface RemoteWorkspacesResponse {
+	workspaces: RemoteWorkspaceInfo[]
+}
+
+/** Body of `POST /api/task/start`. */
+export interface RemoteTaskStartCommand {
+	text: string
+}
+
+/** Body of `POST /api/task/open`. */
+export interface RemoteTaskOpenCommand {
+	taskId: string
+}
+
+/** Body of `POST /api/workspace/open`. */
+export interface RemoteWorkspaceOpenCommand {
+	path: string
 }
 
 /* ------------------------------------------------------------------ *
@@ -203,6 +266,8 @@ export type RemoteActionResult<T = undefined> = T extends undefined
 export interface RemoteStateSource {
 	version: string
 	mode: string
+	/** Workspace folder of the extension host (mirrors `ExtensionState.cwd`). */
+	cwd?: string
 	customModes?: Array<{ slug: string; name: string }>
 	currentApiConfigName?: string
 	apiConfiguration?: { apiProvider?: string } & Record<string, unknown>
@@ -233,7 +298,11 @@ export interface RemoteEventSource {
  * they report failures via `{ ok: false, error }`.
  */
 export interface RemoteActionSource {
-	/** Respond to the active task's pending ask (webview `askResponse` path). 409-like failure when no ask is pending. */
+	/**
+	 * Respond to the active task's pending ask (webview `askResponse` path). 409-like failure when no ask is pending.
+	 * Session 9: `messageResponse` also works without a pending ask as long as an active task exists — it continues/queues
+	 * into the same session, exactly like the webview's free-text input (Task.ts message queue / follow-up handling).
+	 */
 	respondToAsk(response: RemoteAskResponse, text?: string): Promise<RemoteActionResult>
 	/** Switch mode by slug (webview `mode` path). Failure for unknown slugs. */
 	setMode(slug: string): Promise<RemoteActionResult>
@@ -243,6 +312,22 @@ export interface RemoteActionSource {
 	listModels(): Promise<({ ok: true } & RemoteModelsResponse) | { ok: false; error: string }>
 	/** Activate a provider profile by id, optionally overriding the model. Failure for unknown ids. */
 	setModel(profileId: string, modelId?: string): Promise<RemoteActionResult>
+	/**
+	 * Task history, newest first (session 9). Without [workspace] the global history is returned
+	 * (all workspaces); with it only entries whose `workspace` matches exactly — same comparison as
+	 * the webview's own history list (`getRecentTasks`).
+	 */
+	listTasks(workspace?: string): Promise<{ ok: true; tasks: RemoteTaskInfo[] } | { ok: false; error: string }>
+	/** Start a new task/session with the given text (webview `newTask` path). Failure when no text. */
+	startTask(text: string): Promise<RemoteActionResult>
+	/** Restore an older session from history by id (webview history-click / showTaskWithId path). */
+	openTask(taskId: string): Promise<RemoteActionResult>
+	/** Stop the current task (`cancelTask`, same path as the webview). Failure when no active task. */
+	cancelTask(): Promise<RemoteActionResult>
+	/** Recently used workspaces, newest first (session 9). */
+	listWorkspaces(): Promise<{ ok: true; workspaces: RemoteWorkspaceInfo[] } | { ok: false; error: string }>
+	/** Open a workspace in a new VS Code window (`code <path>`). Failure when the path is invalid. */
+	openWorkspace(workspacePath: string): Promise<RemoteActionResult>
 }
 
 export type { ClineMessage, TaskStatus }

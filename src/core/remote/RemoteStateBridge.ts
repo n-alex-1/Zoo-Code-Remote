@@ -1,7 +1,14 @@
 import { EventEmitter } from "events"
 
 import type { ClineMessage, ModelInfo, SuggestionItem, TaskLike, ProviderSettings } from "@roo-code/types"
-import { DEFAULT_MODES, RooCodeEventName, getModelId, getSuggestionMode, hasUsableAnswer, TaskStatus } from "@roo-code/types"
+import {
+	DEFAULT_MODES,
+	RooCodeEventName,
+	getModelId,
+	getSuggestionMode,
+	hasUsableAnswer,
+	TaskStatus,
+} from "@roo-code/types"
 
 import { REMOTE_API_VERSION } from "./types"
 import type {
@@ -110,7 +117,10 @@ function lastAssistantSummary(task: RemoteTaskSource): string | undefined {
  * never throws. At most {@link MAX_FOLLOWUP_SUGGESTIONS} entries; `answer` truncated to 200 chars;
  * `mode` kept only when it is a known mode slug (default or custom).
  */
-export function parseFollowUpSuggestions(text: string | undefined, knownModes?: Iterable<string>): RemoteSuggestion[] | undefined {
+export function parseFollowUpSuggestions(
+	text: string | undefined,
+	knownModes?: Iterable<string>,
+): RemoteSuggestion[] | undefined {
 	if (!text || text.trim().length === 0) {
 		return undefined
 	}
@@ -149,7 +159,10 @@ export function parseFollowUpSuggestions(text: string | undefined, knownModes?: 
 	return suggestions.length > 0 ? suggestions : undefined
 }
 
-function mapPendingAsk(ask: ClineMessage | undefined, knownModes: Set<string>): NonNullable<RemoteStatus["task"]["pendingAsk"]> {
+function mapPendingAsk(
+	ask: ClineMessage | undefined,
+	knownModes: Set<string>,
+): NonNullable<RemoteStatus["task"]["pendingAsk"]> {
 	const askType = ask && ask.type === "ask" ? (ask.ask ?? "") : ""
 	const pendingAsk: NonNullable<RemoteStatus["task"]["pendingAsk"]> = {
 		askType,
@@ -238,9 +251,17 @@ function mapTask(task: RemoteTaskSource | undefined, knownModes: Set<string>): R
 /** Builds the `RemoteStatus` contract object from provider state + active task. */
 export function buildRemoteStatus(state: RemoteStateSource, task: RemoteTaskSource | undefined): RemoteStatus {
 	const apiConfiguration = (state.apiConfiguration ?? {}) as ProviderSettings
-	const knownModes = new Set<string>([...DEFAULT_MODES.map((mode) => mode.slug), ...(state.customModes ?? []).map((mode) => mode.slug)])
+	const knownModes = new Set<string>([
+		...DEFAULT_MODES.map((mode) => mode.slug),
+		...(state.customModes ?? []).map((mode) => mode.slug),
+	])
 	return {
-		connection: { extensionVersion: state.version ?? "", apiVersion: REMOTE_API_VERSION },
+		connection: {
+			extensionVersion: state.version ?? "",
+			apiVersion: REMOTE_API_VERSION,
+			// The extension host's workspace folder — lets the app tell which history entries belong to it.
+			workspace: typeof state.cwd === "string" && state.cwd.length > 0 ? state.cwd : undefined,
+		},
 		task: mapTask(task, knownModes),
 		mode: { current: state.mode ?? "", label: resolveModeLabel(state) },
 		model: {
@@ -283,6 +304,7 @@ export class RemoteStateBridge extends EventEmitter {
 	private readonly log?: (line: string) => void
 	private statusListeners = new Set<StatusListener>()
 	private activityListeners = new Set<ActivityListener>()
+	private activitySnapshotListeners = new Set<(payloads: RemoteActivityPayload[]) => void>()
 	private lastStatusJson: string | null = null
 	private statusDebounceTimer?: ReturnType<typeof setTimeout>
 	/** The task instance whose Message events are currently streamed (kept by reference for clean detach). */
@@ -366,6 +388,19 @@ export class RemoteStateBridge extends EventEmitter {
 		}
 	}
 
+	/**
+	 * Subscribes to whole-feed replacement snapshots (session 9). Fired when the tracked task
+	 * switches to a different taskId — e.g. history navigation via `showTaskWithId` — carrying
+	 * the new task's recent feed entries so clients can replace their accumulated feed instead of
+	 * waiting for live events that only cover the future.
+	 */
+	subscribeActivitySnapshot(listener: (payloads: RemoteActivityPayload[]) => void): () => void {
+		this.activitySnapshotListeners.add(listener)
+		return () => {
+			this.activitySnapshotListeners.delete(listener)
+		}
+	}
+
 	/** Last feed entries of the active task (same mapping/filtering as the live stream). */
 	getRecentActivity(limit = 50): RemoteActivityPayload[] {
 		const task = this.source.getCurrentTask()
@@ -398,6 +433,20 @@ export class RemoteStateBridge extends EventEmitter {
 		this.messageHandler = undefined
 		if (!task) {
 			return
+		}
+		// Task switch to a different session → let clients replace their feed with the new
+		// task's history (rehydrating the same taskId keeps the existing feed).
+		if (prev?.taskId !== task.taskId) {
+			const snapshot = this.getRecentActivity()
+			for (const listener of [...this.activitySnapshotListeners]) {
+				try {
+					listener(snapshot)
+				} catch (error) {
+					this.log?.(
+						"Activity snapshot listener error: " + (error instanceof Error ? error.message : String(error)),
+					)
+				}
+			}
 		}
 		this.partialLastSentAt.clear()
 		const handler = (event: TaskMessageEvent) => this.onTaskMessage(event.message, task)
