@@ -669,7 +669,9 @@ export interface WebviewMessage {
 	apiConfiguration?: ProviderSettings
 	images?: string[]
 	bool?: boolean
-	value?: number
+	/** `updateVSCodeSetting` payload — numbers (e.g. ports) or booleans (e.g. enable toggles). */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	value?: any
 	stepIndex?: number
 	isLaunchAction?: boolean
 	forceShow?: boolean
