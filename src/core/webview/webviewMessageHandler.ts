@@ -1918,6 +1918,22 @@ export const webviewMessageHandler = async (
 			break
 		}
 
+		case "startRemotePairing": {
+			const remoteControl = getRemoteControl()
+			if (remoteControl) {
+				await remoteControl.startPairing()
+			}
+			break
+		}
+
+		case "resetRemotePairing": {
+			const remoteControl = getRemoteControl()
+			if (remoteControl) {
+				await remoteControl.resetPairing()
+			}
+			break
+		}
+
 		case "requestTerminalProfiles": {
 			// Allowlisted request: read VS Code's terminal profiles server-side and
 			// return only the sanitized profile names. The terminal profile dropdown

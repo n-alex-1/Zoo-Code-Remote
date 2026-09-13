@@ -165,6 +165,11 @@ export interface ExtensionMessage {
 		running: boolean
 		token: string | null
 		fingerprint: string | null
+		/** One-shot pairing window (see RemotePairing); absent on older servers. */
+		pairing?: {
+			windowOpen: boolean
+			paired: boolean
+		}
 	}
 	promptText?: string
 	results?:
@@ -658,6 +663,8 @@ export interface WebviewMessage {
 		| "themeFixtureProbeResponse"
 		// Remote Control messages
 		| "requestRemoteInfo"
+		| "startRemotePairing"
+		| "resetRemotePairing"
 	text?: string
 	taskId?: string
 	editedMessageContent?: string

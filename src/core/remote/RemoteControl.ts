@@ -1,4 +1,5 @@
 import * as vscode from "vscode"
+import fsPromises from "fs/promises"
 import path from "path"
 
 import type { ClineProvider } from "../webview/ClineProvider"
@@ -86,6 +87,69 @@ export class RemoteControl implements vscode.Disposable {
 			running: this.server?.isRunning ?? false,
 			token: null, // filled in by the async caller (SecretStorage read)
 			fingerprint: this.server?.fingerprint ?? null,
+			pairing: this.server?.pairingState,
+		}
+	}
+
+	/**
+	 * "Pairing starten" (Settings tab): opens a 120 s one-shot window so the app can fetch token +
+	 * fingerprint via `POST /api/pair`. No credential rotation — an already-paired device keeps
+	 * working, and a second device is rejected with `already_paired` until "Zurücksetzen".
+	 */
+	async startPairing(): Promise<void> {
+		const server = this.server
+		if (!server?.isRunning) {
+			this.log("Pairing started while the remote server is not running — it will be available as soon as it starts.")
+			return
+		}
+		server.openPairingWindow(false)
+		this.log('Pairing window open for 120 s - press "Pairing" in the Zoo Remote app (host/IP + port only).')
+		await this.pushRemoteInfo()
+	}
+
+	/**
+	 * "Pairing zurücksetzen": rotates token AND certificate (new fingerprint), then opens a fresh
+	 * one-shot window. Previously paired devices fail with 401 / fingerprint mismatch and fall
+	 * back to the setup screen automatically — exactly the re-pair flow they already had.
+	 */
+	async resetPairing(): Promise<void> {
+		const server = this.server
+		if (!server?.isRunning) {
+			this.log("Pairing reset while the remote server is not running.")
+			return
+		}
+
+		// 1) New token (SecretStorage). In-flight REST/WS requests with the old token get 401 →
+		//    the app's existing authError flow navigates it back to setup.
+		const newToken = generateRemoteToken()
+		await this.context.secrets.store(REMOTE_TOKEN_SECRET_KEY, newToken)
+
+		// 2) New certificate: delete the stored PEMs so loadOrCreateCertificate regenerates them.
+		const certDir = path.join(this.context.globalStorageUri.fsPath, "remote")
+		try {
+			await Promise.all([
+				fsPromises.unlink(path.join(certDir, "remote-cert.pem")),
+				fsPromises.unlink(path.join(certDir, "remote-key.pem")),
+			])
+		} catch (error) {
+			this.log("Could not delete stored certificate (will be overwritten on regeneration): " + errorText(error))
+		}
+
+		// 3) Restart the server with fresh credentials, then open a rotated pairing window. The
+		//    state machine belongs to the NEW server instance — `server` is stale after the restart.
+		await this.startServer(this.getPort())
+		this.server?.openPairingWindow(true)
+		this.log("Token + Zertifikat neu generiert (Pairing zurückgesetzt). Neues Fenster offen — App jetzt pairen.")
+		await this.pushRemoteInfo()
+	}
+
+	/** Pushes the current remoteInfo payload to the webview (best effort — it may not be open). */
+	private async pushRemoteInfo(): Promise<void> {
+		try {
+			const provider = this.provider as unknown as { postMessageToWebview?: (message: Record<string, unknown>) => Promise<void> } | undefined
+			await provider?.postMessageToWebview?.({ type: "remoteInfo", remoteInfoPayload: await this.getRemoteInfoAsync() })
+		} catch (error) {
+			this.log("Failed to push remoteInfo after pairing change: " + errorText(error))
 		}
 	}
 
@@ -300,6 +364,11 @@ export class RemoteControl implements vscode.Disposable {
 }
 
 const PackageName = "zoo-code"
+
+/** Small helper so catch blocks stay one-liners (no import needed). */
+function errorText(error: unknown): string {
+	return error instanceof Error ? error.message : String(error)
+}
 
 /**
  * Module-level instance holder so the webview message handler can reach the active

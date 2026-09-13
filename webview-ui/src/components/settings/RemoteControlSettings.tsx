@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react"
 
 import { useAppTranslation } from "@/i18n/TranslationContext"
 import { vscode } from "@/utils/vscode"
-import { VSCodeCheckbox, VSCodeLink } from "@vscode/webview-ui-toolkit/react"
+import { VSCodeCheckbox } from "@vscode/webview-ui-toolkit/react"
 import { useEvent, useMount } from "react-use"
 
 import type { ExtensionMessage } from "@roo-code/types"
@@ -19,6 +19,10 @@ type RemoteInfo = {
 	running: boolean
 	token: string | null
 	fingerprint: string | null
+	pairing?: {
+		windowOpen: boolean
+		paired: boolean
+	}
 }
 
 const REMOTE_ENABLED_SETTING = "zoo-code.remote.enabled"
@@ -107,6 +111,20 @@ export const RemoteControlSettings = ({ className, ...props }: { className?: str
 	}
 
 	const isRunning = info?.running ?? false
+	const pairing = info?.pairing
+	const pairingWindowOpen = pairing?.windowOpen === true
+	const paired = pairing?.paired === true
+
+	const handleStartPairing = () => {
+		vscode.postMessage({ type: "startRemotePairing" })
+	}
+
+	const handleResetPairing = () => {
+		if (typeof window !== "undefined" && !window.confirm(t("settings:remote.pairing.resetConfirm"))) {
+			return
+		}
+		vscode.postMessage({ type: "resetRemotePairing" })
+	}
 
 	return (
 		<div className={cn("flex flex-col", className)} {...props}>
@@ -192,10 +210,30 @@ export const RemoteControlSettings = ({ className, ...props }: { className?: str
 								</div>
 							</div>
 
-							<div className="text-vscode-descriptionForeground text-sm">
-								<VSCodeLink href="https://github.com/Zoo-Code-Org" style={{ display: "inline" }}>
-									{t("settings:remote.pairingHint")}
-								</VSCodeLink>
+							{/* Pairing (Session 9b): one-shot window instead of copying token + fingerprint */}
+							<div className="flex flex-col gap-2 rounded border border-vscode-widget-border bg-vscode-editor-background p-3" data-testid="remote-pairing">
+								<div className="text-sm font-medium">{t("settings:remote.pairing.title")}</div>
+								<div className="text-vscode-descriptionForeground text-sm">{t("settings:remote.pairing.description")}</div>
+	
+								{pairingWindowOpen && (
+									<div className="rounded bg-vscode-badge-background px-2 py-1 text-xs text-vscode-badge-foreground">
+										{t("settings:remote.status.pairingOpen")}
+									</div>
+								)}
+								{!pairingWindowOpen && paired && (
+									<div className="text-vscode-descriptionForeground text-sm">{t("settings:remote.status.paired")}</div>
+								)}
+	
+								<div className="flex flex-wrap items-center gap-2">
+									<Button variant="primary" size="sm" onClick={handleStartPairing} data-testid="remote-pairing-start">
+										{t("settings:remote.pairing.start")}
+									</Button>
+									<Button variant="secondary" size="sm" onClick={handleResetPairing} disabled={!isRunning || pairingWindowOpen} data-testid="remote-pairing-reset">
+										{t("settings:remote.pairing.reset")}
+									</Button>
+								</div>
+	
+								<div className="text-vscode-descriptionForeground text-xs">{t("settings:remote.pairingHint")}</div>
 							</div>
 						</div>
 					)}

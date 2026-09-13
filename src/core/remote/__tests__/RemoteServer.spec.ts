@@ -42,6 +42,44 @@ function fetchJson(
 	})
 }
 
+/** POST helper with the same self-signed tolerance as {@link fetchJson}. */
+function postJson(
+	url: string,
+	body: unknown,
+	init?: { headers?: Record<string, string> },
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- JSON bodies are arbitrary in tests
+): Promise<{ status: number; body: any }> {
+	return new Promise((resolve, reject) => {
+		const payload = JSON.stringify(body ?? {})
+		const request = https.request(
+			url,
+			{
+				rejectUnauthorized: false,
+				method: "POST",
+				headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload), ...init?.headers },
+			},
+			(response) => {
+				let data = ""
+				response.setEncoding("utf8")
+				response.on("data", (chunk: string) => {
+					data += chunk
+				})
+				response.on("end", () => {
+					let body: unknown
+					try {
+						body = JSON.parse(data)
+					} catch {
+						body = data
+					}
+					resolve({ status: response.statusCode ?? 0, body })
+				})
+			},
+		)
+		request.on("error", reject)
+		request.end(payload)
+	})
+}
+
 /** Connects to the WS endpoint and resolves once the socket is open. */
 function connectRemoteSocket(port: number): Promise<WebSocket> {
 	return new Promise((resolve, reject) => {
@@ -1032,3 +1070,85 @@ async function waitFor(predicate: () => boolean, what: string): Promise<void> {
 		await new Promise((resolve) => setTimeout(resolve, 10))
 	}
 }
+
+describe("RemoteServer pairing endpoint (POST /api/pair)", () => {
+	beforeAll(() => {
+		allowNetConnect("localhost")
+	})
+
+	let server: RemoteServer
+	let token: string
+	let certDir: string
+
+	beforeEach(async () => {
+		token = generateRemoteToken()
+		certDir = await fs.mkdtemp(path.join(os.tmpdir(), "zoo-remote-pairing-"))
+		server = new RemoteServer({ port: 0, token, certDir })
+		await server.start()
+	})
+
+	afterEach(async () => {
+		await server.stop()
+		await fs.rm(certDir, { recursive: true, force: true })
+	})
+
+	it("answers 409 no_pairing_window while no window is open", async () => {
+		const { status, body } = await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(status).toBe(409)
+		expect(body.error).toBe("no_pairing_window")
+	})
+
+	it("answers with token + fingerprint when a window is open and closes it after one use", async () => {
+		server.openPairingWindow(false)
+		expect(server.pairingState.windowOpen).toBe(true)
+
+		const first = await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(first.status).toBe(200)
+		expect(first.body.token).toBe(token)
+		expect(first.body.fingerprint).toBe(server.fingerprint)
+		expect(server.pairingState.windowOpen).toBe(false)
+		expect(server.pairingState.paired).toBe(true)
+
+		// One-shot: the second attempt without a new window is rejected.
+		const second = await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(second.status).toBe(409)
+	})
+
+	it("rejects a second device with 409 already_paired until a rotated window opens", async () => {
+		server.openPairingWindow(false)
+		const first = await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(first.status).toBe(200)
+
+		// New non-rotated window while already paired → still rejected.
+		server.openPairingWindow(false)
+		const second = await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(second.status).toBe(409)
+		expect(second.body.error).toBe("already_paired")
+
+		// Rotated window (reset: new token + certificate) → pairing possible again.
+		server.openPairingWindow(true)
+		const third = await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(third.status).toBe(200)
+		expect(third.body.token).toBe(token)
+	})
+
+	it("requires POST (GET answers 401 via the generic auth path, unknown methods fall through to 404)", async () => {
+		server.openPairingWindow(false)
+		const get = await fetchJson(`https://localhost:${server.port}/api/pair`)
+		expect(get.status).toBe(401) // GET is not the pairing route → bearer auth required
+
+		const put = await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(put.status).toBe(200) // window consumed by the POST
+	})
+
+	it("resets its pairing state when the server stops and starts again", async () => {
+		server.openPairingWindow(false)
+		await postJson(`https://localhost:${server.port}/api/pair`, {})
+		expect(server.pairingState.paired).toBe(true)
+
+		await server.stop()
+		await server.start()
+		expect(server.pairingState.windowOpen).toBe(false)
+		expect(server.pairingState.paired).toBe(false)
+	})
+})

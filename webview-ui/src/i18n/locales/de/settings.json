@@ -1205,7 +1205,9 @@
 			},
 			"status": {
 				"running": "Server läuft.",
-				"starting": "Server wird gestartet…"
+				"starting": "Server wird gestartet…",
+				"pairingOpen": "Pairing-Fenster offen — in der App auf „Pairing“ tippen (120 s).",
+				"paired": "Ein Gerät ist gepaart. Für ein zweites Gerät: „Zurücksetzen“."
 			},
 			"token": {
 				"label": "Zugriffstoken"
@@ -1215,6 +1217,13 @@
 			},
 			"copy": "Kopieren",
 			"copied": "Kopiert!",
-			"pairingHint": "Gib in der Zoo Remote App Host/IP, Port, Token und Zertifikats-Fingerprint ein, um mit diesem Rechner zu verknüpfen."
+			"pairingHint": "In der Zoo Remote App nur Host/IP + Port eingeben und auf „Pairing“ tippen — Token und Fingerprint holt sich die App selbst.",
+			"pairing": {
+				"title": "App verbinden (Pairing)",
+				"description": "„Pairing starten“ öffnet für 120 Sekunden ein Fenster. In der Zoo Remote App nur Host/IP + Port eingeben und auf „Pairing“ tippen — Token und Zertifikats-Fingerprint werden automatisch übertragen.",
+				"start": "Pairing starten",
+				"reset": "Zurücksetzen (neues Token + Zertifikat)",
+				"resetConfirm": "Token UND Zertifikat neu generieren? Bereits gekoppelte Geräte müssen danach neu pairen."
+			}
 		}
 }

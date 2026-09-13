@@ -8,6 +8,7 @@ import WebSocket, { WebSocketServer } from "ws"
 
 import { extractBearerToken, verifyRemoteToken } from "./RemoteAuth"
 import { loadOrCreateCertificate } from "./RemoteCertificate"
+import { RemotePairing } from "./RemotePairing"
 import {
 	buildAllowedIpSet,
 	clientIp,
@@ -35,6 +36,8 @@ const MODE_PATH = "/api/mode"
 const MODELS_PATH = "/api/models"
 const MODEL_PATH = "/api/model"
 const ASK_RESPOND_PATH = "/api/ask/respond"
+/** Unauthenticated one-shot pairing endpoint (see {@link RemotePairing}). */
+const PAIR_PATH = "/api/pair"
 // Session 9: task history & workspaces.
 const TASKS_PATH = "/api/tasks"
 const TASK_START_PATH = "/api/task/start"
@@ -72,6 +75,8 @@ export class RemotePortInUseError extends Error {
  * Local HTTPS + WebSocket server exposing the Zoo Remote API.
  *
  * - `GET /api/health` — no auth, returns `{ ok: true, version }`.
+ * - `POST /api/pair` — no auth (rate-limited): consumes an open one-shot pairing window and
+ *   answers `{ token, fingerprint }`; 409 `no_pairing_window` / `already_paired` otherwise.
  * - `GET /api/status` — bearer auth, current `RemoteStatus` (Session 2).
  * - Session 3 actions (all bearer auth, JSON bodies max 16 KB):
  *   `GET /api/modes`, `POST /api/mode {slug}`, `GET /api/models`,
@@ -92,6 +97,8 @@ export class RemoteServer {
 	private readonly rateLimiter: RateLimiter
 	/** Handshake limiter for `/events` upgrades (separate budget so one chatty REST peer cannot starve the socket, and vice versa). */
 	private readonly wsRateLimiter: RateLimiter
+	/** One-shot pairing window state machine behind `POST /api/pair`. */
+	private pairing = new RemotePairing()
 	/** Normalized IP allowlist; empty set = all IPs allowed. Checked at socket level on both REST and WS upgrades. */
 	private readonly allowedIps: Set<string>
 
@@ -119,6 +126,25 @@ export class RemoteServer {
 
 	get fingerprint(): string | null {
 		return this.certificate?.fingerprint ?? null
+	}
+
+	/** Current one-shot pairing window state (for the Settings UI / `remoteInfo` payload). */
+	get pairingState(): { windowOpen: boolean; paired: boolean } {
+		return this.pairing.state
+	}
+
+	/**
+	 * Opens a 120 s one-shot pairing window so an app may fetch token + fingerprint via
+	 * `POST /api/pair`. With `rotate = true` the caller has just rotated credentials (reset),
+	 * which also clears the "paired" flag; without it, an already-paired server answers 409.
+	 */
+	openPairingWindow(rotate: boolean): void {
+		this.pairing.openWindow(rotate)
+	}
+
+	/** Current bearer token (set at construction via options). Exposed for `POST /api/pair`. */
+	private get currentToken(): string {
+		return this.options.token
 	}
 
 	async start(): Promise<void> {
@@ -289,6 +315,8 @@ export class RemoteServer {
 		})
 		this.rateLimiter.dispose()
 		this.wsRateLimiter.dispose()
+		this.pairing.dispose()
+		this.pairing = new RemotePairing()
 		this.log("Remote server stopped")
 	}
 
@@ -368,6 +396,13 @@ export class RemoteServer {
 		// Rate limit before auth so a single peer cannot hammer the server.
 		if (!this.rateLimiter.allow(clientIp(req))) {
 			sendJson(res, 429, { ok: false, error: "rate_limited" })
+			return
+		}
+
+		// Pairing: unauthenticated by design (the device does not know the token yet), but only
+		// useful while a one-shot window is open — see RemotePairing.
+		if (url === PAIR_PATH && req.method === "POST") {
+			this.handlePair(req, res)
 			return
 		}
 
@@ -456,6 +491,29 @@ export class RemoteServer {
 			return false
 		}
 		return true
+	}
+
+	/**
+	 * `POST /api/pair` (unauthenticated): consumes an open one-shot pairing window and answers
+	 * with the current token + certificate fingerprint so a device can store both without any
+	 * manual copying. 409 `no_pairing_window` when nobody opened a window, 409 `already_paired`
+	 * once a device paired since start/last reset — "Zurücksetzen" (rotate) re-opens the game.
+	 */
+	private handlePair(req: IncomingMessage, res: ServerResponse): void {
+		const result = this.pairing.tryConsume()
+		switch (result) {
+			case "ok":
+				this.log("Device paired via POST /api/pair.")
+				sendJson(res, 200, { token: this.currentToken, fingerprint: this.fingerprint ?? "" })
+				return
+			case "no_window":
+				sendJson(res, 409, { ok: false, error: "no_pairing_window" })
+				return
+			default:
+				sendJson(res, 409, { ok: false, error: "already_paired" })
+				return
+		}
+		void req
 	}
 
 	private async handleListModes(req: IncomingMessage, res: ServerResponse): Promise<void> {

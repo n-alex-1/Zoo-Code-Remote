@@ -83,6 +83,17 @@ export interface RemoteInfoPayload {
 	running: boolean
 	token: string | null
 	fingerprint: string | null
+	/** One-shot pairing window state (see {@link RemotePairingState}); absent on older servers. */
+	pairing?: {
+		windowOpen: boolean
+		paired: boolean
+	}
+}
+
+/** Response of `POST /api/pair` — the credentials a device stores after pairing. */
+export interface RemotePairResponse {
+	token: string
+	fingerprint: string
 }
 
 /* ------------------------------------------------------------------ *
