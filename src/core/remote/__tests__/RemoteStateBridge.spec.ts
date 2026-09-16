@@ -5,7 +5,7 @@ import { RooCodeEventName, TaskStatus, providerIdentifiers } from "@roo-code/typ
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { RemoteStateBridge, buildRemoteStatus, parseFollowUpSuggestions, toActivityPayload } from "../RemoteStateBridge"
-import type { RemoteEventSource, RemoteStateSource, RemoteTaskSource, RemoteStatus } from "../types"
+import type { RemoteActivityPayload, RemoteEventSource, RemoteStateSource, RemoteTaskSource, RemoteStatus } from "../types"
 
 /* ------------------------------------------------------------------ */
 /* Mocks                                                               */
