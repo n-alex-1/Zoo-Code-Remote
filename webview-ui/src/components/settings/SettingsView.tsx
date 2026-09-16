@@ -29,6 +29,7 @@ import {
 	GitCommitVertical,
 	GraduationCap,
 	ScrollText,
+	Smartphone,
 } from "lucide-react"
 
 import {
@@ -82,6 +83,7 @@ import { SlashCommandsSettings } from "./SlashCommandsSettings"
 import { SkillsSettings } from "./SkillsSettings"
 import { RulesSettings } from "./RulesSettings"
 import { UISettings } from "./UISettings"
+import RemoteControlSettings from "./RemoteControlSettings"
 import ModesView from "../modes/ModesView"
 import McpView from "../mcp/McpView"
 import { WorktreesView } from "../worktrees/WorktreesView"
@@ -114,6 +116,7 @@ export const sectionNames = [
 	"worktrees",
 	"prompts",
 	"ui",
+	"remote",
 	"experimental",
 	"language",
 	"about",
@@ -552,6 +555,7 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 			{ id: "prompts", icon: MessageSquare },
 			{ id: "worktrees", icon: GitBranch },
 			{ id: "ui", icon: Glasses },
+			{ id: "remote", icon: Smartphone },
 			{ id: "experimental", icon: FlaskConical },
 			{ id: "language", icon: Globe },
 			{ id: "about", icon: Info },
@@ -944,6 +948,9 @@ const SettingsView = forwardRef<SettingsViewRef, SettingsViewProps>(({ onDone, t
 								setCachedStateField={setCachedStateField}
 							/>
 						)}
+
+						{/* Remote Control Section */}
+						{renderTab === "remote" && <RemoteControlSettings />}
 
 						{/* Experimental Section */}
 						{renderTab === "experimental" && (

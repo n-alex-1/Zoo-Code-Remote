@@ -40,6 +40,7 @@
 		"rules": "Rules",
 		"prompts": "Prompts",
 		"ui": "UI",
+		"remote": "Remote Control",
 		"experimental": "Experimental",
 		"language": "Language",
 		"about": "About Zoo Code"
@@ -1191,6 +1192,38 @@
 			"input": "Input",
 			"output": "Output",
 			"cacheReads": "Cache reads"
+		}
+	},
+	"remote": {
+		"enabled": {
+			"label": "Enable Remote Control",
+			"description": "Starts a local HTTPS/WebSocket server so the Zoo Remote Android app can see task status and approve/answer asks."
+		},
+		"port": {
+			"label": "Port",
+			"description": "TCP port for the remote control server (default: 8999). Changing it while enabled restarts the server on the new port."
+		},
+		"status": {
+			"running": "Server running.",
+			"starting": "Starting server…",
+			"pairingOpen": "Pairing window open — press \"Pairing\" in the app (120 s).",
+			"paired": "One device is paired. For a second device: \"Reset\"."
+		},
+		"token": {
+			"label": "Access token"
+		},
+		"fingerprint": {
+			"label": "Certificate fingerprint (SHA-256)"
+		},
+		"copy": "Copy",
+		"copied": "Copied!",
+		"pairingHint": "In the Zoo Remote app enter only host/IP + port and press \"Pairing\" — the app fetches token and fingerprint on its own.",
+		"pairing": {
+			"title": "Link app (pairing)",
+			"description": "\"Start pairing\" opens a 120-second window. In the Zoo Remote app enter only host/IP + port and press \"Pairing\" — token and certificate fingerprint are transferred automatically.",
+			"start": "Start pairing",
+			"reset": "Reset (new token + certificate)",
+			"resetConfirm": "Regenerate token AND certificate? Already linked devices must re-pair afterwards."
 		}
 	}
 }

@@ -38,6 +38,7 @@
 		"slashCommands": "Slash-Befehle",
 		"prompts": "Eingabeaufforderungen",
 		"ui": "UI",
+		"remote": "Remote Control",
 		"experimental": "Experimentell",
 		"language": "Sprache",
 		"about": "Über Zoo Code",
@@ -1192,5 +1193,37 @@
 			"descriptionTooLong": "Beschreibung muss 1024 Zeichen oder weniger sein"
 		},
 		"footer": "Erstelle deine eigenen Skills mit dem Skill Writer Modus, verfügbar im <MarketplaceLink>Modes Marketplace</MarketplaceLink>."
-	}
+		},
+		"remote": {
+			"enabled": {
+				"label": "Remote Control aktivieren",
+				"description": "Startet einen lokalen HTTPS/WebSocket-Server, damit die Zoo Remote Android-App den Task-Status sieht und Ask-Fragen genehmigen/antworten kann."
+			},
+			"port": {
+				"label": "Port",
+				"description": "TCP-Port für den Remote-Control-Server (Standard: 8999). Änderung bei aktiviertem Server startet ihn auf dem neuen Port neu."
+			},
+			"status": {
+				"running": "Server läuft.",
+				"starting": "Server wird gestartet…",
+				"pairingOpen": "Pairing-Fenster offen — in der App auf „Pairing“ tippen (120 s).",
+				"paired": "Ein Gerät ist gepaart. Für ein zweites Gerät: „Zurücksetzen“."
+			},
+			"token": {
+				"label": "Zugriffstoken"
+			},
+			"fingerprint": {
+				"label": "Zertifikats-Fingerprint (SHA-256)"
+			},
+			"copy": "Kopieren",
+			"copied": "Kopiert!",
+			"pairingHint": "In der Zoo Remote App nur Host/IP + Port eingeben und auf „Pairing“ tippen — Token und Fingerprint holt sich die App selbst.",
+			"pairing": {
+				"title": "App verbinden (Pairing)",
+				"description": "„Pairing starten“ öffnet für 120 Sekunden ein Fenster. In der Zoo Remote App nur Host/IP + Port eingeben und auf „Pairing“ tippen — Token und Zertifikats-Fingerprint werden automatisch übertragen.",
+				"start": "Pairing starten",
+				"reset": "Zurücksetzen (neues Token + Zertifikat)",
+				"resetConfirm": "Token UND Zertifikat neu generieren? Bereits gekoppelte Geräte müssen danach neu pairen."
+			}
+		}
 }

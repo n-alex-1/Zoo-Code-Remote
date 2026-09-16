@@ -108,6 +108,8 @@ export interface ExtensionMessage {
 		| "fileContent"
 		| "rooHistoryImportProgress"
 		| "themeFixtureProbeRequest"
+		// Remote Control response types
+		| "remoteInfo"
 	text?: string
 	/** For fileContent: { path, content, error? } */
 	fileContent?: { path: string; content: string | null; error?: string }
@@ -156,6 +158,19 @@ export interface ExtensionMessage {
 	values?: Record<string, any>
 	requestId?: string
 	themeFixture?: WebviewThemeFixture
+	/** For remoteInfo: state of the Zoo Remote control server. */
+	remoteInfoPayload?: {
+		enabled: boolean
+		port: number
+		running: boolean
+		token: string | null
+		fingerprint: string | null
+		/** One-shot pairing window (see RemotePairing); absent on older servers. */
+		pairing?: {
+			windowOpen: boolean
+			paired: boolean
+		}
+	}
 	promptText?: string
 	results?:
 		| { path: string; type: "file" | "folder"; label?: string }[]
@@ -646,6 +661,10 @@ export interface WebviewMessage {
 		| "openRuleFile"
 		| "openRulesDirectory"
 		| "themeFixtureProbeResponse"
+		// Remote Control messages
+		| "requestRemoteInfo"
+		| "startRemotePairing"
+		| "resetRemotePairing"
 	text?: string
 	taskId?: string
 	editedMessageContent?: string
@@ -657,7 +676,9 @@ export interface WebviewMessage {
 	apiConfiguration?: ProviderSettings
 	images?: string[]
 	bool?: boolean
-	value?: number
+	/** `updateVSCodeSetting` payload — numbers (e.g. ports) or booleans (e.g. enable toggles). */
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	value?: any
 	stepIndex?: number
 	isLaunchAction?: boolean
 	forceShow?: boolean

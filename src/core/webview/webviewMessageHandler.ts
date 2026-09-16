@@ -92,7 +92,12 @@ import { resolveDefaultSaveUri, saveLastExportPath } from "../../utils/export"
 import { getCommand } from "../../utils/commands"
 import { getLMStudioModels } from "../../api/providers/fetchers/lmstudio"
 
-const ALLOWED_VSCODE_SETTINGS = new Set(["terminal.integrated.inheritEnv"])
+// The Zoo Remote settings are also writable from the webview (Settings → "Remote Control" section).
+const ALLOWED_VSCODE_SETTINGS = new Set([
+	"terminal.integrated.inheritEnv",
+	"zoo-code.remote.enabled",
+	"zoo-code.remote.port",
+])
 
 // Serializes handling of "telemetrySetting" messages. Each invocation reads the previous
 // setting, awaits a persistence write, then applies the new live telemetry state -- with no
@@ -105,6 +110,7 @@ let telemetrySettingQueue: Promise<void> = Promise.resolve()
 
 import { MarketplaceManager, MarketplaceItemType } from "../../services/marketplace"
 import { setPendingTodoList } from "../tools/UpdateTodoListTool"
+import { getRemoteControl } from "../remote/RemoteControl"
 import {
 	handleListWorktrees,
 	handleCreateWorktree,
@@ -1902,6 +1908,31 @@ export const webviewMessageHandler = async (
 			}
 
 			break
+
+		case "requestRemoteInfo": {
+			const remoteControl = getRemoteControl()
+			await provider.postMessageToWebview({
+				type: "remoteInfo",
+				remoteInfoPayload: remoteControl ? await remoteControl.getRemoteInfoAsync() : undefined,
+			})
+			break
+		}
+
+		case "startRemotePairing": {
+			const remoteControl = getRemoteControl()
+			if (remoteControl) {
+				await remoteControl.startPairing()
+			}
+			break
+		}
+
+		case "resetRemotePairing": {
+			const remoteControl = getRemoteControl()
+			if (remoteControl) {
+				await remoteControl.resetPairing()
+			}
+			break
+		}
 
 		case "requestTerminalProfiles": {
 			// Allowlisted request: read VS Code's terminal profiles server-side and

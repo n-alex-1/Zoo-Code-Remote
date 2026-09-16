@@ -434,6 +434,29 @@
 					"scope": "machine",
 					"description": "%settings.workspace.rootResolution.description%",
 					"markdownDescription": "%settings.workspace.rootResolution.description%"
+				},
+				"zoo-code.remote.enabled": {
+					"type": "boolean",
+					"default": false,
+					"description": "%settings.remote.enabled.description%",
+					"markdownDescription": "%settings.remote.enabled.description%"
+				},
+				"zoo-code.remote.port": {
+					"type": "number",
+					"default": 8999,
+					"minimum": 1024,
+					"maximum": 65535,
+					"description": "%settings.remote.port.description%",
+					"markdownDescription": "%settings.remote.port.description%"
+				},
+				"zoo-code.remote.allowedIps": {
+					"type": "array",
+					"items": {
+						"type": "string"
+					},
+					"default": [],
+					"description": "%settings.remote.allowedIps.description%",
+					"markdownDescription": "%settings.remote.allowedIps.description%"
 				}
 			}
 		}
@@ -470,7 +493,6 @@
 		"@anthropic-ai/vertex-sdk": "^0.19.0",
 		"@aws-sdk/client-bedrock-runtime": "^3.922.0",
 		"@aws-sdk/credential-providers": "^3.922.0",
-		"@smithy/node-http-handler": "^4.0.0",
 		"@google/genai": "^1.29.1",
 		"@lmstudio/sdk": "^1.1.1",
 		"@mistralai/mistralai": "^1.9.18",
@@ -481,6 +503,7 @@
 		"@roo-code/ipc": "workspace:^",
 		"@roo-code/telemetry": "workspace:^",
 		"@roo-code/types": "workspace:^",
+		"@smithy/node-http-handler": "^4.0.0",
 		"ai-sdk-provider-poe": "2.0.18",
 		"async-mutex": "^0.5.0",
 		"axios": "^1.18.1",
@@ -496,9 +519,9 @@
 		"get-folder-size": "^5.0.0",
 		"global-agent": "^3.0.0",
 		"google-auth-library": "^10.2.0",
+		"gray-matter": "^4.0.3",
 		"http-proxy-agent": "^7.0.0",
 		"https-proxy-agent": "^7.0.0",
-		"gray-matter": "^4.0.3",
 		"i18next": "^25.0.0",
 		"ignore": "^7.0.3",
 		"isbinaryfile": "^5.0.7",
@@ -548,8 +571,10 @@
 		"@types/node-cache": "4.2.5",
 		"@types/proper-lockfile": "4.1.4",
 		"@types/ps-tree": "1.1.6",
+		"@types/selfsigned": "^2.1.0",
 		"@types/semver-compare": "1.0.3",
 		"@types/vscode": "1.100.0",
+		"@types/ws": "^8.18.1",
 		"@vitest/coverage-v8": "4.1.9",
 		"@vscode/vsce": "3.9.2",
 		"ai": "6.0.218",
@@ -559,6 +584,8 @@
 		"nock": "14.0.15",
 		"ovsx": "0.10.12",
 		"rimraf": "6.0.1",
-		"vitest": "4.1.9"
+		"selfsigned": "^5.5.0",
+		"vitest": "4.1.9",
+		"ws": "^8.21.3"
 	}
 }
