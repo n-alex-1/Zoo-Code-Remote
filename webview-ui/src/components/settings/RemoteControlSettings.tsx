@@ -225,10 +225,11 @@ export const RemoteControlSettings = ({ className, ...props }: { className?: str
 								)}
 	
 								<div className="flex flex-wrap items-center gap-2">
-									<Button variant="primary" size="sm" onClick={handleStartPairing} data-testid="remote-pairing-start">
+									{/* shrink + min-w-0 override the Button base (shrink-0) so long labels wrap at narrow widths */}
+									<Button variant="primary" size="sm" className="min-w-0 shrink whitespace-normal" onClick={handleStartPairing} data-testid="remote-pairing-start">
 										{t("settings:remote.pairing.start")}
 									</Button>
-									<Button variant="secondary" size="sm" onClick={handleResetPairing} disabled={!isRunning || pairingWindowOpen} data-testid="remote-pairing-reset">
+									<Button variant="secondary" size="sm" className="min-w-0 shrink whitespace-normal" onClick={handleResetPairing} disabled={!isRunning || pairingWindowOpen} data-testid="remote-pairing-reset">
 										{t("settings:remote.pairing.reset")}
 									</Button>
 								</div>

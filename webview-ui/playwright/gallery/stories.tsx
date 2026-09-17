@@ -181,6 +181,12 @@ export const stories: Record<string, Story> = {
 			</div>
 		)
 	},
+	"remote-control-settings": async () => {
+		const { RemoteControlSettingsStory } = await import(
+			"@/components/settings/__tests__/RemoteControlSettings.visual.fixture"
+		)
+		return <RemoteControlSettingsStory />
+	},
 	"ui-settings": async () => {
 		const { UISettingsStory } = await import("@/components/settings/__tests__/UISettings.visual.fixture")
 		return <UISettingsStory />
