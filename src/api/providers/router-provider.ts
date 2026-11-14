@@ -6,6 +6,7 @@ import { ApiHandlerOptions, RouterName } from "../../shared/api"
 
 import { BaseProvider } from "./base-provider"
 import { getModels, getModelsFromCache, refreshModels } from "./fetchers/modelCache"
+import { detachOnAbort } from "./utils/abort-signal"
 
 import { DEFAULT_HEADERS, NOT_PROVIDED } from "./constants"
 
@@ -81,7 +82,7 @@ export abstract class RouterProvider extends BaseProvider {
 			}
 
 			this.modelFetchPromise = (async () => {
-				let models = await getModels(fetchOptions)
+				let models = await getModels(fetchOptions, this)
 				this.models = models
 
 				// getModels may return a shared cached catalog that predates this
@@ -90,7 +91,7 @@ export abstract class RouterProvider extends BaseProvider {
 				// Auth-scoped providers already bypass that cache in getModels;
 				// refreshModels is then a no-op extra live fetch only on true misses.
 				if (!models[id]) {
-					models = await refreshModels(fetchOptions)
+					models = await refreshModels(fetchOptions, this)
 					this.models = models
 				}
 
@@ -108,8 +109,22 @@ export abstract class RouterProvider extends BaseProvider {
 		return this.modelFetchPromise
 	}
 
-	async ensureModelFetched(): Promise<void> {
-		await this.fetchModel()
+	async ensureModelFetched(signal?: AbortSignal): Promise<void> {
+		// A caller that already gave up must not start (or keep) a wait on the
+		// shared catalog fetch.
+		if (signal?.aborted) {
+			throw signal.reason
+		}
+
+		const fetch = this.fetchModel()
+		if (!signal) {
+			await fetch
+			return
+		}
+
+		// Detach this waiter as soon as the signal aborts; the shared in-flight
+		// fetch continues for any other waiter and still populates the cache.
+		await detachOnAbort(fetch, signal)
 	}
 
 	override getModel(): { id: string; info: ModelInfo } {
@@ -129,11 +144,14 @@ export abstract class RouterProvider extends BaseProvider {
 		// Fall back to global cache (synchronous disk/memory cache).
 		// Pass the full options so URL-scoped providers (litellm, ollama, etc.)
 		// resolve the same compound cache key that fetchModel() wrote under.
-		const cachedModels = getModelsFromCache({
-			provider: this.name,
-			baseUrl: this.client.baseURL,
-			apiKey: this.apiKey,
-		})
+		const cachedModels = getModelsFromCache(
+			{
+				provider: this.name,
+				baseUrl: this.client.baseURL,
+				apiKey: this.apiKey,
+			},
+			this,
+		)
 		if (cachedModels?.[id]) {
 			// Also populate instance models for future calls
 			this.models = cachedModels
