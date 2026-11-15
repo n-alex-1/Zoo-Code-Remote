@@ -5,8 +5,9 @@ Remote Control lets you monitor and operate Zoo Code from your phone. When enabl
 - Current **task status**, active **mode**, and current **model**
 - A **notification** when Zoo Code waits for input (tool approval, follow-up question) — you can approve, deny, or answer remotely
 - Mode and model switching from the app
+- A live **activity feed** where each tool call renders as a compact, icon-coded chip (localized verb + target file, plus a detail line for the pattern, diff stats and other arguments) instead of raw JSON; repeated identical calls collapse into one line with a ×N badge and the full payload stays available behind a tap
 
-Only status metadata is transferred — **no file contents** of your workspace.
+Only status metadata is transferred — **no file contents** of your workspace. The feed text (including the `ClineSayTool` JSON the app decodes) is capped at 2000 characters per line.
 
 ## Enabling Remote Control
 
@@ -39,8 +40,8 @@ You can always fall back to manual pairing: copy the **Access token** and **Cert
 
 ## Settings reference
 
-| Setting | Type | Default | Description |
-|---|---|---|---|
-| `zoo-code.remote.enabled` | boolean | `false` | Starts the local HTTPS/WebSocket server so the Zoo Remote app can connect. |
-| `zoo-code.remote.port` | number | `8999` | TCP port for the remote control server (1024–65535). Changing it while enabled restarts the server. |
-| `zoo-code.remote.allowedIps` | string[] | `[]` | Optional allowlist of client IPs; empty allows all. Checked at socket level for REST and WebSocket connections alike. |
+| Setting                      | Type     | Default | Description                                                                                                           |
+| ---------------------------- | -------- | ------- | --------------------------------------------------------------------------------------------------------------------- |
+| `zoo-code.remote.enabled`    | boolean  | `false` | Starts the local HTTPS/WebSocket server so the Zoo Remote app can connect.                                            |
+| `zoo-code.remote.port`       | number   | `8999`  | TCP port for the remote control server (1024–65535). Changing it while enabled restarts the server.                   |
+| `zoo-code.remote.allowedIps` | string[] | `[]`    | Optional allowlist of client IPs; empty allows all. Checked at socket level for REST and WebSocket connections alike. |
