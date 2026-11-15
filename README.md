@@ -1,5 +1,15 @@
+> **This fork adds Remote Control.** Zoo Code normally has no network API; this
+> branch embeds an HTTPS/WebSocket server (`src/core/remote/`) with token auth,
+> TLS fingerprint pinning and one-tap pairing, so the companion
+> **[Zoo Remote Android app](https://github.com/n-alex-1/Zoo-Code-Remote-App)**
+> can monitor and operate a running session from your phone: live task status and
+> activity feed, approve/deny/answer asks, mode & model switching and the session
+> picker. Everything else is upstream Zoo Code. Details:
+> [docs/remote-control.md](docs/remote-control.md) · feature branch:
+> [`feature/remote-control`](https://github.com/n-alex-1/Zoo-Code-Remote/tree/feature/remote-control).
+
 <p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=ZooCodeOrganization.zoo-code"><img src="https://img.shields.io/badge/VS_Code_Marketplace-007ACC?style=flat&logo=visualstudiocode&logoColor=white" alt="VS Code Marketplace"></a>
+	<a href="https://marketplace.visualstudio.com/items?itemName=ZooCodeOrganization.zoo-code"><img src="https://img.shields.io/badge/VS_Code_Marketplace-007ACC?style=flat&logo=visualstudiocode&logoColor=white" alt="VS Code Marketplace"></a>
   <a href="https://x.com/ZooCodeDev"><img src="https://img.shields.io/badge/ZooCode-000000?style=flat&logo=x&logoColor=white" alt="X"></a>
   <a href="https://discord.gg/VxfP4Vx3gX"><img src="https://img.shields.io/badge/Join%20Discord-5865F2?style=flat&logo=discord&logoColor=white" alt="Join Discord"></a>
   <a href="https://www.reddit.com/r/ZooCode/"><img src="https://img.shields.io/badge/Join%20r%2FZooCode-FF4500?style=flat&logo=reddit&logoColor=white" alt="Join r/ZooCode"></a>
